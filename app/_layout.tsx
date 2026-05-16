@@ -51,45 +51,12 @@ try {
   });
 } catch {}
 
-// ── Monkey-patch ExceptionsManager.reportFatalException ──────────────────────
-// Even with ErrorUtils.setGlobalHandler, React Native's ExceptionsManager can
-// still escalate errors to the native RCTFatal via reportFatalException.
-// We patch it here to demote ALL fatal exceptions to non-fatal so they are
-// captured by our global handler above instead of calling abort().
-try {
-  // Use a deferred patch so the module is fully loaded before we intercept it
-  const patchExceptionsManager = () => {
-    try {
-      // Access via the internal module registry — safe to ignore if not available
-      if (Platform.OS === 'web') return;
-      // Split require path so Metro web bundler does not statically trace this
-      // into NativeExceptionsManager.js (which has a broken Platform import on web).
-      const _em_path = 'react-native/Libraries/Core/' + 'ExceptionsManager';
-      const ExceptionsManager = require(_em_path);
-      if (ExceptionsManager && typeof ExceptionsManager.reportFatalException === 'function') {
-        const original = ExceptionsManager.reportFatalException.bind(ExceptionsManager);
-        ExceptionsManager.reportFatalException = (message: string, stack: any[], exceptionId: number) => {
-          try {
-            Sentry.captureException(new Error(message), { tags: { source: 'reportFatalException' } });
-          } catch {}
-          try {
-            // Demote to non-fatal — this routes through reportException instead of aborting
-            if (typeof ExceptionsManager.reportException === 'function') {
-              ExceptionsManager.reportException({ message, stack, id: exceptionId, isFatal: false });
-            } else if (typeof ExceptionsManager.reportSoftException === 'function') {
-              ExceptionsManager.reportSoftException(message, stack, exceptionId);
-            }
-          } catch {}
-          // Do NOT call original — that is what triggers RCTFatal → abort()
-        };
-      }
-    } catch {}
-  };
-  // Run immediately and again after a short delay to catch any re-initialisation
-  patchExceptionsManager();
-  setTimeout(patchExceptionsManager, 100);
-  setTimeout(patchExceptionsManager, 1000);
-} catch {}
+// ── ExceptionsManager patching intentionally removed ────────────────────────
+// The native RCTFatal override is handled by plugins/withRCTFatalOverride.js
+// (injected into the Xcode project at EAS prebuild time). The JS-level patch
+// via require('react-native/Libraries/Core/ExceptionsManager') caused Metro to
+// transitively bundle NativeExceptionsManager.js which fails on web builds
+// (broken relative Platform import at react-native/src/private/specs_DEPRECATED/).
 import { AlertProvider, AuthProvider } from '@/template';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';

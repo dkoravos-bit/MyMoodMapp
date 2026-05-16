@@ -135,6 +135,15 @@ config.resolver = {
       if (nativeOnlyModules.some(m => moduleName === m || moduleName.startsWith(m + '/'))) {
         return { filePath: EMPTY_SHIM, type: 'sourceFile' };
       }
+      // NativeExceptionsManager — internal RN spec file that requires a relative
+      // Platform path which doesn't exist in web builds. Shim it so that any
+      // transitive import chain pulling in ExceptionsManager never breaks the web bundle.
+      if (
+        moduleName.includes('NativeExceptionsManager') ||
+        moduleName.includes('specs_DEPRECATED/modules/NativeExceptionsManager')
+      ) {
+        return { filePath: EMPTY_SHIM, type: 'sourceFile' };
+      }
     }
 
     if (originalResolveRequest) {

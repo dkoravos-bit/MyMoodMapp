@@ -97,8 +97,8 @@
       [
         "@sentry/react-native/expo",
         {
-          "organization": "dkoravos",
-          "project": "mymoodmapp",
+          "organization": "maverick-investments-llc",
+          "project": "apple-ios",
           "url": "https://sentry.io/"
         }
       ]

@@ -28,8 +28,8 @@
       },
       "env": {
         "EAS_BUILD_RUNNER": "13",
-        "SENTRY_ORG": "dkoravos",
-        "SENTRY_PROJECT": "mymoodmapp"
+        "SENTRY_ORG": "maverick-investments-llc",
+        "SENTRY_PROJECT": "apple-ios"
       },
       "ios": {
         "distribution": "store",

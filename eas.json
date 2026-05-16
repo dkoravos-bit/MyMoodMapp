@@ -30,7 +30,7 @@
         "distribution": "store",
         "buildConfiguration": "Release",
         "simulator": false,
-        "image": "macos-15-sequoia-xcode-26"
+        "image": "macos-sequoia-15.6-xcode-26.2"
       },
       "android": {
         "buildType": "app-bundle",

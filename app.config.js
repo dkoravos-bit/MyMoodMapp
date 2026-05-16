@@ -20,27 +20,33 @@ const isEASBuild = !!(
 // Plugins that must ONLY run during EAS native builds.
 // They require @expo/config-plugins, fs, path — none of which exist in
 // the OnSpace preview sandbox where `expo` itself is not installed.
-const easNativePlugins = isEASBuild
-  ? [
-      // 1. Remove react-native-webrtc from the Podfile so WebRTC.framework
-      //    is never linked. WebRTC's +load method crashes iOS 26 on launch.
-      './plugins/withoutWebRTC',
+const easNativePlugins = [];
 
-      // 2. Override RCTFatal with a log-and-swallow handler so any OTHER
-      //    uncaught ObjC exceptions don't abort() the process.
-      './plugins/withRCTFatalOverride',
+if (isEASBuild) {
+  // 1. Remove react-native-webrtc from the Podfile so WebRTC.framework
+  //    is never linked. WebRTC's +load method crashes iOS 26 on launch.
+  easNativePlugins.push('./plugins/withoutWebRTC');
 
-      // 3. Sentry dSYM + source map upload after each EAS build.
-      [
-        '@sentry/react-native/expo',
-        {
-          organization: 'maverick-investments-llc',
-          project: 'apple-ios',
-          url: 'https://sentry.io/',
-        },
-      ],
-    ]
-  : [];
+  // 2. Override RCTFatal with a log-and-swallow handler so any OTHER
+  //    uncaught ObjC exceptions don't abort() the process.
+  easNativePlugins.push('./plugins/withRCTFatalOverride');
+
+  // 3. Sentry dSYM + source map upload — only if the package is installed.
+  //    @sentry/react-native is optional; skip gracefully if absent.
+  try {
+    require.resolve('@sentry/react-native/expo');
+    easNativePlugins.push([
+      '@sentry/react-native/expo',
+      {
+        organization: 'maverick-investments-llc',
+        project: 'apple-ios',
+        url: 'https://sentry.io/',
+      },
+    ]);
+  } catch {
+    // @sentry/react-native not installed — skip Sentry plugin
+  }
+}
 
 module.exports = {
   ...base,

@@ -61,7 +61,11 @@ try {
   const patchExceptionsManager = () => {
     try {
       // Access via the internal module registry — safe to ignore if not available
-      const ExceptionsManager = require('react-native/Libraries/Core/ExceptionsManager');
+      if (Platform.OS === 'web') return;
+      // Split require path so Metro web bundler does not statically trace this
+      // into NativeExceptionsManager.js (which has a broken Platform import on web).
+      const _em_path = 'react-native/Libraries/Core/' + 'ExceptionsManager';
+      const ExceptionsManager = require(_em_path);
       if (ExceptionsManager && typeof ExceptionsManager.reportFatalException === 'function') {
         const original = ExceptionsManager.reportFatalException.bind(ExceptionsManager);
         ExceptionsManager.reportFatalException = (message: string, stack: any[], exceptionId: number) => {

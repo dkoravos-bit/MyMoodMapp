@@ -1,0 +1,51 @@
+/**
+ * app.config.js
+ *
+ * Replaces app.json as the Expo config source.
+ * On EAS builds (EAS_BUILD=true set by EAS automatically, or CI=true),
+ * native-only plugins are added that would break the OnSpace preview sandbox.
+ * In all other environments the config is identical to app.json.
+ */
+
+const { expo: base } = require('./app.json');
+
+// EAS automatically sets EAS_BUILD=true in the build environment.
+// CI=true is also reliable on EAS runners.
+const isEASBuild = !!(
+  process.env.EAS_BUILD === 'true' ||
+  process.env.EAS_BUILD ||
+  process.env.CI === 'true'
+);
+
+// Plugins that must ONLY run during EAS native builds.
+// They require @expo/config-plugins, fs, path — none of which exist in
+// the OnSpace preview sandbox where `expo` itself is not installed.
+const easNativePlugins = isEASBuild
+  ? [
+      // 1. Remove react-native-webrtc from the Podfile so WebRTC.framework
+      //    is never linked. WebRTC's +load method crashes iOS 26 on launch.
+      './plugins/withoutWebRTC',
+
+      // 2. Override RCTFatal with a log-and-swallow handler so any OTHER
+      //    uncaught ObjC exceptions don't abort() the process.
+      './plugins/withRCTFatalOverride',
+
+      // 3. Sentry dSYM + source map upload after each EAS build.
+      [
+        '@sentry/react-native/expo',
+        {
+          organization: 'maverick-investments-llc',
+          project: 'apple-ios',
+          url: 'https://sentry.io/',
+        },
+      ],
+    ]
+  : [];
+
+module.exports = {
+  ...base,
+  plugins: [
+    ...(base.plugins || []),
+    ...easNativePlugins,
+  ],
+};

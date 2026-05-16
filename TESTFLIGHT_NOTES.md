@@ -126,21 +126,18 @@ To test notifications:
 
 ## EAS Build Notes (Before Submitting)
 
-Two plugins are **removed from app.json** to fix the OnSpace preview environment (they require `expo` to be installed at config-eval time, which the preview sandbox doesn't support). **Re-add them to `app.json` before running `eas build`:**
+**No manual plugin changes needed.** Native-only plugins (`withoutWebRTC`, `withRCTFatalOverride`, `@sentry/react-native/expo`) are automatically injected via `app.config.js` when EAS sets the `EAS_BUILD=true` environment variable during the build. The OnSpace preview sandbox never sees these plugins.
 
-```json
-"./plugins/withRCTFatalOverride",
-[
-  "@sentry/react-native/expo",
-  {
-    "organization": "maverick-investments-llc",
-    "project": "apple-ios",
-    "url": "https://sentry.io/"
-  }
-]
+**Current build number: 15**
+
+Run:
+```
+eas build --platform ios --profile production
 ```
 
-Insert after `"expo-audio"` in the `plugins` array.
+### Why WebRTC Was Crashing (Fixed in Build 15)
+
+`react-native-webrtc` cannot be removed from `package.json` without breaking unrelated dependencies, but its native `+load` method fires at iOS app launch before the React JS bridge is ready. On iOS 26 this triggers an ObjC exception that React Native's `ExceptionsManagerQueue` catches and escalates to `abort()`. The `plugins/withoutWebRTC.js` config plugin removes the pod from the Podfile before `pod install` runs, so `WebRTC.framework` is never linked into the binary.
 
 ---
 

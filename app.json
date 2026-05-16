@@ -93,7 +93,6 @@
       ],
       "expo-secure-store",
       "expo-web-browser",
-      "expo-audio",
       "expo-audio"
     ],
     "experiments": {

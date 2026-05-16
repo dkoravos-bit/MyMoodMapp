@@ -18,6 +18,24 @@ config.transformer.minifierConfig = {
 // (this setting only affects JS bundling, not native linking)
 config.transformer.hermesParser = true;
 
+// ── Block Metro from ever bundling files in the plugins/ directory ────────────
+// Config plugins (plugins/*.js) are build-time-only tools for Expo prebuild.
+// They use Node built-ins (fs, path) and @expo/config-plugins which are not
+// compatible with the React Native JS bundle.
+const pluginsDir = path.resolve(__dirname, 'plugins');
+const existingBlockList = config.resolver.blockList;
+const pluginsBlockRegex = new RegExp(`^${pluginsDir.replace(/\\/g, '\\\\')}.*`);
+
+if (existingBlockList) {
+  // Merge with any existing blockList (could be a RegExp or array)
+  const existing = Array.isArray(existingBlockList)
+    ? existingBlockList
+    : [existingBlockList];
+  config.resolver.blockList = [...existing, pluginsBlockRegex];
+} else {
+  config.resolver.blockList = pluginsBlockRegex;
+}
+
 // Absolute path to the empty shim — @/ alias doesn't work inside resolveRequest
 const EMPTY_SHIM = path.resolve(__dirname, 'shims/native-empty.js');
 // WebRTC shim — applied on ALL platforms to prevent iOS 26 native crash
@@ -31,7 +49,9 @@ const ASYNC_STORAGE_WEB_SHIM  = path.resolve(__dirname, 'shims/async-storage-web
 const YOUTUBE_IFRAME_WEB_SHIM = path.resolve(__dirname, 'shims/react-native-youtube-iframe-web.js');
 const SENTRY_WEB_SHIM         = path.resolve(__dirname, 'shims/sentry-react-native-web.js');
 
-// Native-only packages that are replaced with the empty shim on web
+// Native-only packages that are replaced with the empty shim on web.
+// This list covers packages used in app code AND build tooling that might
+// accidentally get resolved during web bundling.
 const nativeOnlyModules = [
   'expo-health',
   'react-native-health',
@@ -45,6 +65,14 @@ const nativeOnlyModules = [
   // RevenueCat — native IAP SDK, no web support
   'react-native-purchases',
   'react-native-purchases-ui',
+  // Expo Config Plugins — build-time only, never bundled in the app
+  '@expo/config-plugins',
+  // Node built-ins that config plugins use — safe to empty-shim in the browser bundle
+  'fs',
+  'path',
+  'child_process',
+  'os',
+  'module',
 ];
 
 const originalResolveRequest = config.resolver.resolveRequest;
@@ -100,7 +128,7 @@ config.resolver = {
       if (moduleName === 'expo-auth-session' || moduleName.startsWith('expo-auth-session/')) {
         return { filePath: AUTH_SESSION_SHIM, type: 'sourceFile' };
       }
-      // Fully native packages — empty shim
+      // Fully native / build-time-only packages — empty shim on web
       if (nativeOnlyModules.some(m => moduleName === m || moduleName.startsWith(m + '/'))) {
         return { filePath: EMPTY_SHIM, type: 'sourceFile' };
       }

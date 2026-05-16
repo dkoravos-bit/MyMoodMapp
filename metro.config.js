@@ -24,11 +24,12 @@ const EMPTY_SHIM = path.resolve(__dirname, 'shims/native-empty.js');
 const WEBRTC_SHIM = path.resolve(__dirname, 'shims/react-native-webrtc-shim.js');
 
 // Packages that need a custom web shim (partial support)
-const AUTH_SESSION_SHIM      = path.resolve(__dirname, 'shims/expo-auth-session-web.js');
-const NOTIFICATIONS_WEB_SHIM = path.resolve(__dirname, 'shims/expo-notifications-web.js');
-const DEVICE_WEB_SHIM        = path.resolve(__dirname, 'shims/expo-device-web.js');
-const ASYNC_STORAGE_WEB_SHIM = path.resolve(__dirname, 'shims/async-storage-web.js');
+const AUTH_SESSION_SHIM       = path.resolve(__dirname, 'shims/expo-auth-session-web.js');
+const NOTIFICATIONS_WEB_SHIM  = path.resolve(__dirname, 'shims/expo-notifications-web.js');
+const DEVICE_WEB_SHIM         = path.resolve(__dirname, 'shims/expo-device-web.js');
+const ASYNC_STORAGE_WEB_SHIM  = path.resolve(__dirname, 'shims/async-storage-web.js');
 const YOUTUBE_IFRAME_WEB_SHIM = path.resolve(__dirname, 'shims/react-native-youtube-iframe-web.js');
+const SENTRY_WEB_SHIM         = path.resolve(__dirname, 'shims/sentry-react-native-web.js');
 
 // Native-only packages that are replaced with the empty shim on web
 const nativeOnlyModules = [
@@ -66,6 +67,13 @@ config.resolver = {
     }
 
     if (isWeb) {
+      // @sentry/react-native — native-only SDK; replace with no-op on web
+      if (
+        moduleName === '@sentry/react-native' ||
+        moduleName.startsWith('@sentry/react-native/')
+      ) {
+        return { filePath: SENTRY_WEB_SHIM, type: 'sourceFile' };
+      }
       // react-native-youtube-iframe — web uses plain <iframe>; shim the native package
       if (
         moduleName === 'react-native-youtube-iframe' ||

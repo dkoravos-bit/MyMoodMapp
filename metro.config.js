@@ -73,6 +73,9 @@ const nativeOnlyModules = [
   'child_process',
   'os',
   'module',
+  // react-native-youtube-iframe — fallback for cases where the conditional
+  // require() in sound-lab.tsx is still evaluated by the web bundler
+  'react-native-youtube-iframe',
 ];
 
 const originalResolveRequest = config.resolver.resolveRequest;

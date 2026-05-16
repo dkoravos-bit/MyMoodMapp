@@ -1,22 +1,9 @@
 // @ts-nocheck
 import React from 'react';
 import { ErrorUtils, Platform } from 'react-native';
-
-// @sentry/react-native is native-only — must NOT be a static top-level import
-// because the web bundler evaluates all imports before Metro shims are applied.
-// Use conditional require() so the web bundle never resolves this module.
-let Sentry: any = {
-  init: () => {},
-  wrap: (c: any) => c,
-  captureException: () => {},
-  captureMessage: () => {},
-  addBreadcrumb: () => {},
-};
-if (Platform.OS !== 'web') {
-  try {
-    Sentry = require('@sentry/react-native');
-  } catch {}
-}
+// sentryService.ts wraps @sentry/react-native on native;
+// sentryService.web.ts provides no-ops on web — zero native imports in web bundle.
+import Sentry from '@/services/sentryService';
 
 // ── Sentry — initialised as early as possible for maximum crash coverage ──
 // DSN is read from EXPO_PUBLIC_SENTRY_DSN in .env / EAS secrets.

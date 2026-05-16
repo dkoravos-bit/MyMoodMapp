@@ -77,12 +77,9 @@ import type { MbPad } from '@/components/feature/MoodBeatGame';
 import PixelArtGame from '@/components/feature/PixelArtGame';
 import { precacheAllSounds } from '@/services/soundCache';
 
-// react-native-youtube-iframe is native-only — require() with guard to avoid
-// Metro dynamic import() which causes fatal crashes on iOS (Turbo Module bridge).
-let _YoutubePlayerNative: any = null;
-if (Platform.OS !== 'web') {
-  try { _YoutubePlayerNative = require('react-native-youtube-iframe').default; } catch {}
-}
+// youtubePlayer.ts wraps react-native-youtube-iframe on native;
+// youtubePlayer.web.ts exports null on web — zero native imports in web bundle.
+import _YoutubePlayerNative from '@/services/youtubePlayer';
 
 // ─── Types/constants for disabled stub functions only ────────────────────────────
 // These types are used in the large disabled inline stubs below (\_unusedPlaceholder_noop,

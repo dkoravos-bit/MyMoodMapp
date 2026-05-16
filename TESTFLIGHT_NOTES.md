@@ -124,6 +124,26 @@ To test notifications:
 
 ---
 
+## EAS Build Notes (Before Submitting)
+
+Two plugins are **removed from app.json** to fix the OnSpace preview environment (they require `expo` to be installed at config-eval time, which the preview sandbox doesn't support). **Re-add them to `app.json` before running `eas build`:**
+
+```json
+"./plugins/withRCTFatalOverride",
+[
+  "@sentry/react-native/expo",
+  {
+    "organization": "maverick-investments-llc",
+    "project": "apple-ios",
+    "url": "https://sentry.io/"
+  }
+]
+```
+
+Insert after `"expo-audio"` in the `plugins` array.
+
+---
+
 ## Technical Notes for Reviewers
 
 - Bundle ID: com.dkoravos.mymoodmapp

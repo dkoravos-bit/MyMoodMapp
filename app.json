@@ -94,15 +94,7 @@
       "expo-secure-store",
       "expo-web-browser",
       "expo-audio",
-      "./plugins/withRCTFatalOverride",
-      [
-        "@sentry/react-native/expo",
-        {
-          "organization": "maverick-investments-llc",
-          "project": "apple-ios",
-          "url": "https://sentry.io/"
-        }
-      ]
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": false

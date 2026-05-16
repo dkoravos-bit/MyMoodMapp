@@ -1,20 +1,51 @@
 // @ts-nocheck
 import React from 'react';
 import { ErrorUtils } from 'react-native';
+import * as Sentry from '@sentry/react-native';
+
+// ── Sentry — initialised as early as possible for maximum crash coverage ──
+// DSN is read from EXPO_PUBLIC_SENTRY_DSN in .env / EAS secrets.
+// If the variable is missing the SDK silently no-ops (safe for local dev).
+try {
+  const dsn = process.env.EXPO_PUBLIC_SENTRY_DSN;
+  if (dsn) {
+    Sentry.init({
+      dsn,
+      // Release name must match what EAS uploads source maps under
+      release: 'com.dkoravos.mymoodmapp@1.0.0+13',
+      dist: '13',
+      // Capture 100 % of sessions — tune down in high-traffic production
+      tracesSampleRate: 0.2,
+      // Attach JS stack to all native crashes
+      enableNativeCrashHandling: true,
+      // Keep breadcrumbs for context (navigation, console)
+      maxBreadcrumbs: 50,
+      // Ignore known non-fatal noise
+      ignoreErrors: [
+        'Network request failed',
+        'Load failed',
+        'AbortError',
+      ],
+    });
+  }
+} catch {}
 
 // ── Global JS error handler — catches ALL unhandled exceptions before they reach native ──
 // CRITICAL: Must intercept fatal errors BEFORE they reach RCTFatal (which calls abort()).
-// The handler below swallows ALL errors — fatal and non-fatal — to prevent the
-// ObjC exception rethrow on com.facebook.react.ExceptionsManagerQueue that causes SIGABRT.
+// The handler below reports to Sentry then swallows the error so it never reaches
+// the ObjC rethrow path on com.facebook.react.ExceptionsManagerQueue (SIGABRT).
 try {
-  ErrorUtils.setGlobalHandler((error: any, _isFatal: boolean) => {
-    // Silent — never rethrow, never call original handler for fatal errors.
-    // ErrorBoundary below renders a fallback UI for visible crashes.
+  ErrorUtils.setGlobalHandler((error: any, isFatal: boolean) => {
+    try {
+      // Report to Sentry before swallowing — captures JS stack + device context
+      Sentry.captureException(error, { tags: { fatal: String(isFatal) } });
+    } catch {}
     try {
       if (__DEV__) {
-        console.warn('[GlobalErrorHandler] caught:', _isFatal ? 'FATAL' : 'non-fatal', error?.message);
+        console.warn('[GlobalErrorHandler] caught:', isFatal ? 'FATAL' : 'non-fatal', error?.message);
       }
     } catch {}
+    // Never rethrow — prevents abort() on native ExceptionsManagerQueue
   });
 } catch {}
 import { AlertProvider, AuthProvider } from '@/template';
@@ -72,7 +103,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
 }
 
 // ── Global error boundary — catches JS crashes before they reach native ────
-class ErrorBoundary extends React.Component<
+// Wrapped with Sentry.wrap so component-level errors are automatically reported.
+class ErrorBoundaryInner extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; error: string | null }
 > {
@@ -84,12 +116,10 @@ class ErrorBoundary extends React.Component<
     return { hasError: true, error: String(error?.message ?? error ?? 'Unknown error') };
   }
   componentDidCatch(error: any, info: any) {
-    // Silent — avoid console.error in production
-    void error; void info;
+    try { Sentry.captureException(error, { extra: { componentStack: info?.componentStack } }); } catch {}
   }
   render() {
     if (this.state.hasError) {
-      // Minimal fallback — keeps the process alive so Apple review doesn't see a blank crash
       return (
         <View style={{ flex: 1, backgroundColor: '#0A0A14', alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ color: '#fff', fontSize: 16, textAlign: 'center', paddingHorizontal: 32 }}>
@@ -101,6 +131,7 @@ class ErrorBoundary extends React.Component<
     return this.props.children;
   }
 }
+const ErrorBoundary = Sentry.wrap(ErrorBoundaryInner as any) as typeof ErrorBoundaryInner;
 
 function RootNavigator() {
   const router = useRouter();

@@ -27,7 +27,9 @@
         "disabled": true
       },
       "env": {
-        "EAS_BUILD_RUNNER": "13"
+        "EAS_BUILD_RUNNER": "13",
+        "SENTRY_ORG": "dkoravos",
+        "SENTRY_PROJECT": "mymoodmapp"
       },
       "ios": {
         "distribution": "store",

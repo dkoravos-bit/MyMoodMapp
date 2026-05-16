@@ -91,7 +91,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Platform, View, Text } from 'react-native';
+import { View, Text } from 'react-native';
 import { NotificationPrePrompt, shouldShowNotificationPrePrompt } from '@/components/feature/NotificationPrePrompt';
 import { AppProvider } from '@/contexts/AppContext';
 import { useApp } from '@/hooks/useApp';

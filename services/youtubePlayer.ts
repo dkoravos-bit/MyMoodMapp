@@ -1,6 +1,7 @@
 // youtubePlayer.ts
-// Native/default version: exports YoutubePlayer from react-native-youtube-iframe.
-// On web, youtubePlayer.web.ts is automatically selected instead.
-// This file is NEVER bundled for web — the .web.ts override takes priority.
-// @ts-nocheck
-export { default } from 'react-native-youtube-iframe';
+// Web-safe base stub — zero native imports.
+// On native platforms, youtubePlayer.native.ts is automatically selected by Metro.
+// On web, youtubePlayer.web.ts is automatically selected by Metro.
+// This file is the final fallback and must never import native packages.
+
+export default null;

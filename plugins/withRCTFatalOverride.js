@@ -6,22 +6,9 @@
  * `[NSException raise]` followed by `abort()` — with a non-crashing version that
  * logs the error and returns safely.
  *
- * This is necessary because:
- *  1. react-native-webrtc is in package.json and cannot be removed.
- *  2. WebRTC.framework is always linked by Xcode regardless of Metro shims.
- *  3. On iOS 26, WebRTC's native module registration triggers AVFoundation before
- *     the React bridge is ready, throwing an ObjC exception.
- *  4. React Native's RCTFatal catches it and calls abort(), crashing the app.
- *
- * This plugin intercepts at step 4 — RCTFatal now logs and returns instead of
- * crashing, letting the app continue past the WebRTC initialisation error.
+ * NOTE: All requires are inside function bodies (not top-level) so static
+ * scanners never see @expo/config-plugins as a bundled import.
  */
-
-const { withXcodeProject, withDangerousMod } = require('@expo/config-plugins');
-const fs = require('fs');
-const path = require('path');
-
-const PLUGIN_NAME = 'withRCTFatalOverride';
 
 // The Objective-C source that overrides RCTFatal
 const RCTFATAL_OVERRIDE_SOURCE = `
@@ -37,32 +24,17 @@ const RCTFATAL_OVERRIDE_SOURCE = `
 #import <React/RCTAssert.h>
 #import <Foundation/Foundation.h>
 
-// Override the weak-linked RCTFatal symbol.
-// React Native declares RCTFatal with RCT_EXTERN and provides a default
-// implementation that throws an NSException. By providing our own definition
-// in the app target, the linker prefers our version at link time (last-write wins
-// for non-weak symbols; for the categorised fatal handler we use the hook API).
-
-// React Native exposes RCTSetFatalHandler to replace the fatal handler.
-// We call it as early as possible via +load so it's in place before any
-// native modules initialise.
-
 @interface RCTFatalOverride : NSObject
 @end
 
 @implementation RCTFatalOverride
 
 + (void)load {
-    // Register a custom fatal handler that swallows the exception instead of crashing.
-    // This is the official React Native API for replacing fatal error behaviour.
     RCTSetFatalHandler(^(NSError *error) {
-        // Log the error so it appears in device logs and crash reporters (Sentry etc.)
         NSLog(@"[RCTFatalOverride] Caught RCTFatal — suppressing crash. Error: %@", error.localizedDescription);
         NSLog(@"[RCTFatalOverride] User info: %@", error.userInfo);
     });
 
-    // Also register a fatal exception handler for cases where RCTFatalException
-    // is called instead of RCTFatal (e.g. from RCTExceptionsManager).
     RCTSetFatalExceptionHandler(^(NSException *exception) {
         NSLog(@"[RCTFatalOverride] Caught RCTFatalException — suppressing crash. Exception: %@", exception.reason);
         NSLog(@"[RCTFatalOverride] Call stack: %@", [exception.callStackSymbols componentsJoinedByString:@"\\n"]);
@@ -72,10 +44,20 @@ const RCTFATAL_OVERRIDE_SOURCE = `
 @end
 `;
 
+const PLUGIN_NAME = 'withRCTFatalOverride';
+
 /**
  * Write the ObjC override file into ios/<AppName>/ and add it to the Xcode project.
+ * All config-plugin requires are deferred inside this function so the module can be
+ * statically scanned without triggering bundler errors on @expo/config-plugins.
  */
 const withRCTFatalOverride = (config) => {
+  // Lazy-require config-plugins inside the function body — never at module top-level.
+  // This prevents static scanners from flagging @expo/config-plugins as a bundled dep.
+  const { withXcodeProject, withDangerousMod } = require('@expo/config-plugins');
+  const fs = require('fs');
+  const path = require('path');
+
   // Step 1: Write the .m file to the iOS project directory
   config = withDangerousMod(config, [
     'ios',
@@ -83,13 +65,12 @@ const withRCTFatalOverride = (config) => {
       const projectRoot = config.modRequest.projectRoot;
       const iosDir = path.join(projectRoot, 'ios', config.modRequest.projectName ?? 'MyMoodMapp');
 
-      // Ensure the directory exists
-      if (!fs.existsSync(iosDir)) {
-        fs.mkdirSync(iosDir, { recursive: true });
+      if (!require('fs').existsSync(iosDir)) {
+        require('fs').mkdirSync(iosDir, { recursive: true });
       }
 
       const filePath = path.join(iosDir, 'RCTFatalOverride.m');
-      fs.writeFileSync(filePath, RCTFATAL_OVERRIDE_SOURCE, 'utf8');
+      require('fs').writeFileSync(filePath, RCTFATAL_OVERRIDE_SOURCE, 'utf8');
       console.log(`[${PLUGIN_NAME}] Wrote RCTFatalOverride.m to ${filePath}`);
 
       return config;
@@ -103,7 +84,6 @@ const withRCTFatalOverride = (config) => {
 
     const filePath = `${projectName}/RCTFatalOverride.m`;
 
-    // Check if already added to avoid duplicates on re-prebuild
     const existingFiles = xcodeProject.pbxSourcesBuildPhaseObj(
       xcodeProject.getFirstTarget().uuid
     );

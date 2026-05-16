@@ -1,0 +1,29 @@
+# Cloudflare Pages configuration
+name = "mymoodmapp"
+pages_build_output_dir = "dist"
+
+# ── DASHBOARD SETTINGS ────────────────────────────────────────────────────────
+# Workers & Pages → your project → Settings → Builds & deployments → Edit
+#
+# THE REAL FIX: The lockfile must be deleted INSIDE the install command,
+# before npm ever reads it. Putting the deletion in the build command is
+# too late — Cloudflare validates the lockfile during the install phase.
+#
+#   Install command:      rm -f package-lock.json && npm install --legacy-peer-deps
+#   Build command:        npx expo export --platform web --clear
+#   Build output dir:     dist
+#   Root directory:       (leave blank)
+#
+# Why this works:
+#   1. rm -f deletes the stale lockfile from the cloned repo
+#   2. npm install runs with no lockfile present, so there's nothing to compare
+#   3. npm regenerates a fresh lockfile from package.json
+#   4. --legacy-peer-deps resolves any peer dependency conflicts
+#
+# ── Environment variables (Dashboard → Settings → Environment variables) ──────
+#
+#   NODE_VERSION                  = 20
+#   CI                            = false
+#   EXPO_USE_METRO_WORKSPACE_ROOT = 1
+#   EXPO_PUBLIC_SUPABASE_URL      = https://cmktrjpyclukrjplcmkt.backend.onspace.ai
+#   EXPO_PUBLIC_SUPABASE_ANON_KEY = <your anon key from .env>

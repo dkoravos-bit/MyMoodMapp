@@ -1,0 +1,79 @@
+[build]
+  command = "npm install --legacy-peer-deps && npx expo export --platform web --clear"
+  publish = "dist"
+
+[build.processing]
+  skip_processing = false
+
+[build.processing.html]
+  pretty_urls = true
+
+[build.environment]
+  NODE_VERSION = "20"
+  CI = "false"
+  EXPO_USE_METRO_WORKSPACE_ROOT = "1"
+  NPM_FLAGS = "--legacy-peer-deps"
+
+# ── Cache static assets aggressively ──────────────────────────────────────────
+# Hashed JS/CSS bundles — safe to cache for 1 year (filename changes on rebuild)
+[[headers]]
+  for = "/_expo/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Expo web assets (fonts, images bundled by Metro)
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# JS/CSS at root dist level
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Fonts
+[[headers]]
+  for = "/*.woff2"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*.woff"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Images
+[[headers]]
+  for = "/*.png"
+  [headers.values]
+    Cache-Control = "public, max-age=2592000"
+
+[[headers]]
+  for = "/*.jpg"
+  [headers.values]
+    Cache-Control = "public, max-age=2592000"
+
+[[headers]]
+  for = "/*.webp"
+  [headers.values]
+    Cache-Control = "public, max-age=2592000"
+
+# index.html — short cache so deploys propagate quickly
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# ── SPA fallback — all routes serve index.html so Expo Router handles them ────
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+  force = false

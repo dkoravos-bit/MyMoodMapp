@@ -26,6 +26,9 @@
       "cache": {
         "disabled": true
       },
+      "env": {
+        "EAS_BUILD_RUNNER": "13"
+      },
       "ios": {
         "distribution": "store",
         "buildConfiguration": "Release",

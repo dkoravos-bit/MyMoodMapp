@@ -3,16 +3,18 @@ import React from 'react';
 import { ErrorUtils } from 'react-native';
 
 // ── Global JS error handler — catches ALL unhandled exceptions before they reach native ──
+// CRITICAL: Must intercept fatal errors BEFORE they reach RCTFatal (which calls abort()).
+// The handler below swallows ALL errors — fatal and non-fatal — to prevent the
+// ObjC exception rethrow on com.facebook.react.ExceptionsManagerQueue that causes SIGABRT.
 try {
-  const _originalHandler = ErrorUtils.getGlobalHandler();
-  ErrorUtils.setGlobalHandler((error: any, isFatal: boolean) => {
-    // Log for crash reporting / debugging
-    console.error('[GlobalErrorHandler] isFatal=' + isFatal, error?.message, error?.stack);
-    // For non-fatal errors, forward to the original handler so RN can display dev overlay
-    if (!isFatal) {
-      try { _originalHandler(error, isFatal); } catch {}
-    }
-    // Fatal errors: swallow — ErrorBoundary below will render a fallback UI
+  ErrorUtils.setGlobalHandler((error: any, _isFatal: boolean) => {
+    // Silent — never rethrow, never call original handler for fatal errors.
+    // ErrorBoundary below renders a fallback UI for visible crashes.
+    try {
+      if (__DEV__) {
+        console.warn('[GlobalErrorHandler] caught:', _isFatal ? 'FATAL' : 'non-fatal', error?.message);
+      }
+    } catch {}
   });
 } catch {}
 import { AlertProvider, AuthProvider } from '@/template';

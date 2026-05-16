@@ -20,6 +20,8 @@ config.transformer.hermesParser = true;
 
 // Absolute path to the empty shim — @/ alias doesn't work inside resolveRequest
 const EMPTY_SHIM = path.resolve(__dirname, 'shims/native-empty.js');
+// WebRTC shim — applied on ALL platforms to prevent iOS 26 native crash
+const WEBRTC_SHIM = path.resolve(__dirname, 'shims/react-native-webrtc-shim.js');
 
 // Packages that need a custom web shim (partial support)
 const AUTH_SESSION_SHIM      = path.resolve(__dirname, 'shims/expo-auth-session-web.js');
@@ -50,6 +52,18 @@ config.resolver = {
   ...config.resolver,
   resolveRequest: (context, moduleName, platform) => {
     const isWeb = platform === 'web' || platform == null;
+
+    // ── react-native-webrtc: shim on ALL platforms ──────────────────────────
+    // WebRTC.framework crashes iOS 26 at startup (native module registration
+    // triggers AVFoundation / Core Audio before the React bridge is ready).
+    // Replacing all JS references with a safe stub prevents the ObjC exception
+    // that causes abort() on com.facebook.react.ExceptionsManagerQueue.
+    if (
+      moduleName === 'react-native-webrtc' ||
+      moduleName.startsWith('react-native-webrtc/')
+    ) {
+      return { filePath: WEBRTC_SHIM, type: 'sourceFile' };
+    }
 
     if (isWeb) {
       // react-native-youtube-iframe — web uses plain <iframe>; shim the native package

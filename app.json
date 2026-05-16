@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.dkoravos.mymoodmapp",
-      "buildNumber": "13",
+      "buildNumber": "14",
       "jsEngine": "hermes",
       "infoPlist": {
         "UIBackgroundModes": [
@@ -94,6 +94,7 @@
       "expo-secure-store",
       "expo-web-browser",
       "expo-audio",
+      "./plugins/withRCTFatalOverride",
       [
         "@sentry/react-native/expo",
         {

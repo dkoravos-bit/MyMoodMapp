@@ -48,6 +48,42 @@ try {
     // Never rethrow — prevents abort() on native ExceptionsManagerQueue
   });
 } catch {}
+
+// ── Monkey-patch ExceptionsManager.reportFatalException ──────────────────────
+// Even with ErrorUtils.setGlobalHandler, React Native's ExceptionsManager can
+// still escalate errors to the native RCTFatal via reportFatalException.
+// We patch it here to demote ALL fatal exceptions to non-fatal so they are
+// captured by our global handler above instead of calling abort().
+try {
+  // Use a deferred patch so the module is fully loaded before we intercept it
+  const patchExceptionsManager = () => {
+    try {
+      // Access via the internal module registry — safe to ignore if not available
+      const ExceptionsManager = require('react-native/Libraries/Core/ExceptionsManager');
+      if (ExceptionsManager && typeof ExceptionsManager.reportFatalException === 'function') {
+        const original = ExceptionsManager.reportFatalException.bind(ExceptionsManager);
+        ExceptionsManager.reportFatalException = (message: string, stack: any[], exceptionId: number) => {
+          try {
+            Sentry.captureException(new Error(message), { tags: { source: 'reportFatalException' } });
+          } catch {}
+          try {
+            // Demote to non-fatal — this routes through reportException instead of aborting
+            if (typeof ExceptionsManager.reportException === 'function') {
+              ExceptionsManager.reportException({ message, stack, id: exceptionId, isFatal: false });
+            } else if (typeof ExceptionsManager.reportSoftException === 'function') {
+              ExceptionsManager.reportSoftException(message, stack, exceptionId);
+            }
+          } catch {}
+          // Do NOT call original — that is what triggers RCTFatal → abort()
+        };
+      }
+    } catch {}
+  };
+  // Run immediately and again after a short delay to catch any re-initialisation
+  patchExceptionsManager();
+  setTimeout(patchExceptionsManager, 100);
+  setTimeout(patchExceptionsManager, 1000);
+} catch {}
 import { AlertProvider, AuthProvider } from '@/template';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';

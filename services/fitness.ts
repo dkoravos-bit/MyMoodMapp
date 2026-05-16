@@ -14,17 +14,19 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ─── expo-health (managed builds — HealthKit iOS + Health Connect Android) ────
 let ExpoHealth: any = null;
-try {
-  ExpoHealth = require('expo-health');
-} catch {}
+if (Platform.OS !== 'web') {
+  try { ExpoHealth = require('expo-health'); } catch {}
+}
 
 // ─── Pedometer (expo-sensors) ─────────────────────────────────────────────────
 // Available in Expo Go on iOS and Android
 let Pedometer: any = null;
-try {
-  const mod = require('expo-sensors');
-  Pedometer = mod.Pedometer ?? null;
-} catch {}
+if (Platform.OS !== 'web') {
+  try {
+    const mod = require('expo-sensors');
+    Pedometer = mod.Pedometer ?? null;
+  } catch {}
+}
 
 // ─── HealthKit (react-native-health) — legacy EAS builds only ────────────────
 let AppleHealthKit: any = null;

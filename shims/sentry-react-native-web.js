@@ -57,7 +57,8 @@ const Severity = {
   Log: 'log', Info: 'info', Debug: 'debug', Critical: 'critical',
 };
 
-module.exports = {
+// Support both ESM default import and named imports
+const sentryWebShim = {
   init,
   wrap,
   captureException,
@@ -80,10 +81,9 @@ module.exports = {
   ReactNativeTracing,
   ReactNavigationInstrumentation,
   Severity,
-  default: {
-    init, wrap, captureException, captureMessage, captureEvent,
-    addBreadcrumb, setUser, setTag, setTags, setContext, setExtra, setExtras,
-    withScope, startTransaction, getCurrentHub, lastEventId, flush, close,
-    Native, ReactNativeTracing, ReactNavigationInstrumentation, Severity,
-  },
+  default: null, // set below
 };
+sentryWebShim.default = sentryWebShim;
+
+module.exports = sentryWebShim;
+module.exports.default = sentryWebShim;

@@ -366,7 +366,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return (
+  try { return (
     <AppContext.Provider
       value={{
         archetypeId, setArchetypeId,
@@ -397,5 +397,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     >
       {children}
     </AppContext.Provider>
-  );
+  ); } catch (e: any) {
+    console.error('[AppProvider] render error:', String(e?.message));
+    return <>{children}</>;
+  }
 }

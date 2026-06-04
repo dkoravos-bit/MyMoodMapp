@@ -19,15 +19,19 @@ import {
 // is never initialized during bundle evaluation.
 let _eaCreatePlayer: any = null;
 let _eaSetMode: any = null;
+let _eaAudioSession: any = null;
 
-function _getExpoAudio(): { createAudioPlayer: any; setAudioModeAsync: any } | null {
+function _getExpoAudio(): { createAudioPlayer: any; setAudioModeAsync: any; AudioSession: any } | null {
   if (Platform.OS === 'web') return null;
-  if (_eaCreatePlayer) return { createAudioPlayer: _eaCreatePlayer, setAudioModeAsync: _eaSetMode };
+  if (_eaCreatePlayer) return { createAudioPlayer: _eaCreatePlayer, setAudioModeAsync: _eaSetMode, AudioSession: _eaAudioSession };
   try {
     const ea = require('expo-audio');
     _eaCreatePlayer = ea.createAudioPlayer;
     _eaSetMode = ea.setAudioModeAsync;
-    return { createAudioPlayer: _eaCreatePlayer, setAudioModeAsync: _eaSetMode };
+    // AudioSession is expo-audio's native iOS audio session manager
+    // It exposes setCategory('Playback') which enables true background/lockscreen audio
+    _eaAudioSession = ea.AudioSession ?? null;
+    return { createAudioPlayer: _eaCreatePlayer, setAudioModeAsync: _eaSetMode, AudioSession: _eaAudioSession };
   } catch { return null; }
 }
 
@@ -342,24 +346,232 @@ export function getCdnUrl(soundId: string): string | null {
 // NATIVE PLAYER (expo-audio)
 // ─────────────────────────────────────────────────────────────────────────────
 
-let _avSound:      any = null;
+// Crossfade duration in seconds — long enough to be inaudible, short enough
+// to not require too much look-ahead buffering.
+const NATIVE_XFADE_SECS = 3.0;
+// How far before the end of the track we trigger the crossfade.
+// Must be > NATIVE_XFADE_SECS to give the second player time to load.
+const NATIVE_XFADE_LOOKAHEAD_SECS = NATIVE_XFADE_SECS + 0.8;
+
+interface XfadeState {
+  /** The currently audible player (fading out or at full volume) */
+  active: any;
+  /** The next player being prepared / already fading in */
+  next: any | null;
+  /** Scheduled timeout id for the next crossfade trigger */
+  scheduleTimer: ReturnType<typeof setTimeout> | null;
+  /** Volume ramp interval for both players */
+  rampInterval: ReturnType<typeof setInterval> | null;
+  /** Target volume (user-controlled) */
+  targetVol: number;
+  /** URI of the track — needed to recreate next player */
+  uri: string;
+  /** Metadata for lockscreen */
+  meta?: { name: string; category: string; emoji: string };
+  /** Whether the whole engine has been stopped */
+  stopped: boolean;
+  /** Duration of the track in seconds (detected after load) */
+  duration: number;
+}
+
+let _xfade: XfadeState | null = null;
 let _avSessionSecs = 0;
 let _avSessionTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Safely destroy a player without throwing */
+function _destroyPlayer(p: any): void {
+  if (!p) return;
+  try { p.pause(); } catch {}
+  try { p.remove(); } catch {}
+}
+
+/**
+ * Create a new expo-audio player for a URI, configure it for crossfade
+ * (loop = false so we can control the boundary ourselves), set volume and
+ * register the lockscreen handler on iOS.
+ */
+async function _makeCrossfadePlayer(
+  uri: string,
+  volume: number,
+  meta?: { name: string; category: string; emoji: string },
+): Promise<any> {
+  const ea = _getExpoAudio();
+  if (!ea?.createAudioPlayer) throw new Error('Audio unavailable');
+
+  let playUri = uri;
+  if (uri.startsWith('data:')) {
+    try {
+      const fs = require('expo-file-system');
+      if (fs?.cacheDirectory) {
+        const hash = uri.slice(22, 54).replace(/[^a-zA-Z0-9]/g, '');
+        const tmpPath = `${fs.cacheDirectory}mm_snd_${hash}.wav`;
+        const info = await fs.getInfoAsync(tmpPath);
+        if (!info.exists) {
+          const base64 = uri.split(',')[1];
+          await fs.writeAsStringAsync(tmpPath, base64, { encoding: fs.EncodingType.Base64 });
+        }
+        playUri = tmpPath;
+      }
+    } catch {}
+  }
+
+  const player = ea.createAudioPlayer({ uri: playUri });
+  player.volume = volume;
+  // loop = false: we handle looping via dual-player crossfade
+  player.loop = false;
+
+  if (Platform.OS === 'ios' && meta) {
+    try {
+      if (typeof player.setActiveForLockScreen === 'function') {
+        player.setActiveForLockScreen(true, {
+          title: meta.name ?? 'Ambient Sound',
+          artist: 'MyMoodMapp · Mood Lab',
+          albumTitle: meta.category ?? 'Soundscapes',
+        });
+      }
+    } catch {}
+  }
+
+  return player;
+}
+
+/**
+ * Ramp `player.volume` from `from` to `to` over `durationMs` ms.
+ * Returns the interval id so the caller can cancel it if needed.
+ */
+function _rampVolume(
+  player: any,
+  from: number,
+  to: number,
+  durationMs: number,
+): ReturnType<typeof setInterval> {
+  const STEPS = 30;
+  const stepMs = durationMs / STEPS;
+  const delta = (to - from) / STEPS;
+  let step = 0;
+  try { player.volume = from; } catch {}
+  const id = setInterval(() => {
+    step++;
+    const next = from + delta * step;
+    try { player.volume = Math.max(0, Math.min(1, next)); } catch {}
+    if (step >= STEPS) {
+      clearInterval(id);
+      try { player.volume = to; } catch {}
+      if (to === 0) { _destroyPlayer(player); }
+    }
+  }, stepMs) as ReturnType<typeof setInterval>;
+  return id;
+}
+
+/**
+ * Schedule the next crossfade: `secsBeforeEnd` seconds before the current
+ * active player's track ends, prepare the next player and crossfade.
+ */
+function _scheduleNativeCrossfade(state: XfadeState, secsBeforeEnd: number): void {
+  if (state.stopped || secsBeforeEnd <= 0) return;
+  const ms = Math.max(50, (secsBeforeEnd - NATIVE_XFADE_LOOKAHEAD_SECS) * 1000);
+  state.scheduleTimer = setTimeout(async () => {
+    if (state.stopped) return;
+    try {
+      // Build the incoming player
+      const nextPlayer = await _makeCrossfadePlayer(state.uri, 0, state.meta);
+      if (state.stopped) { _destroyPlayer(nextPlayer); return; }
+      state.next = nextPlayer;
+
+      // Start the next player silently then fade it in
+      nextPlayer.play();
+      if (Platform.OS === 'ios') {
+        try {
+          const ea2 = _getExpoAudio();
+          if (ea2?.AudioSession?.setActive) await ea2.AudioSession.setActive(true);
+        } catch {}
+      }
+
+      const xfadeMs = NATIVE_XFADE_SECS * 1000;
+
+      // Fade out active player
+      _rampVolume(state.active, state.targetVol, 0, xfadeMs);
+      // Fade in next player (this also becomes the new active)
+      _rampVolume(nextPlayer, 0, state.targetVol, xfadeMs);
+
+      // Swap active/next after crossfade completes
+      setTimeout(() => {
+        if (state.stopped) return;
+        state.active = nextPlayer;
+        state.next = null;
+
+        // Detect duration of new player and schedule the following crossfade
+        let waited = 0;
+        const poll = setInterval(() => {
+          waited += 100;
+          const dur = _getPlayerDuration(state.active);
+          if (dur > 1 || waited > 5000) {
+            clearInterval(poll);
+            if (!state.stopped) {
+              state.duration = dur > 1 ? dur : state.duration;
+              _scheduleNativeCrossfade(state, state.duration);
+            }
+          }
+        }, 100);
+      }, xfadeMs + 100);
+    } catch {
+      // If crossfade setup fails, fall back to simple loop on current player
+      if (!state.stopped) {
+        try { state.active.loop = true; } catch {}
+      }
+    }
+  }, ms) as ReturnType<typeof setTimeout>;
+}
+
+/** Attempt to read duration from expo-audio player across API variants */
+function _getPlayerDuration(player: any): number {
+  if (!player) return 0;
+  try {
+    // expo-audio >= 2.x
+    const d = player.duration ?? player.durationMillis;
+    if (typeof d === 'number' && d > 0) return d > 1000 ? d / 1000 : d;
+    // status-based API
+    const s = player.getStatusAsync?.();
+    if (s?.durationMillis) return s.durationMillis / 1000;
+  } catch {}
+  return 0;
+}
 
 export async function configureAudioSession(_isPro = false): Promise<void> {
   if (Platform.OS === 'web') return;
   const ea = _getExpoAudio();
-  if (!ea?.setAudioModeAsync) return;
-  try {
-    await ea.setAudioModeAsync({
-      allowsRecordingIOS:         false,
-      staysActiveInBackground:    true,
-      playsInSilentModeIOS:       true,
-      shouldDuckAndroid:          false,
-      playThroughEarpieceAndroid: false,
-    } as any);
-  } catch (e) {
-    if (__DEV__) console.warn('[configureAudioSession]', e);
+  if (!ea) return;
+
+  // PRIMARY: AudioSession.setCategory('Playback') is the correct iOS-native way to
+  // configure AVAudioSession for background/lockscreen/silent-mode playback.
+  // setAudioModeAsync alone is NOT sufficient on iOS 17+ — it does not reliably
+  // set the AVAudioSession category to AVAudioSessionCategoryPlayback.
+  if (Platform.OS === 'ios' && ea.AudioSession) {
+    try {
+      await ea.AudioSession.setCategory('Playback');
+    } catch {}
+    try {
+      // Also set active so the session takes effect immediately
+      if (ea.AudioSession.setActive) await ea.AudioSession.setActive(true);
+    } catch {}
+  }
+
+  // SECONDARY: setAudioModeAsync for cross-platform configuration and Android support.
+  // CRITICAL: expo-audio uses DIFFERENT property names than expo-av:
+  //   expo-av:    playsInSilentModeIOS / allowsRecordingIOS / staysActiveInBackground
+  //   expo-audio: playsInSilentMode    / allowsRecording    / shouldPlayInBackground
+  // Using expo-av names in expo-audio silently no-ops — this was why lockscreen audio failed.
+  if (ea.setAudioModeAsync) {
+    try {
+      await ea.setAudioModeAsync({
+        allowsRecording:        false,   // expo-audio property (NOT allowsRecordingIOS)
+        playsInSilentMode:      true,    // expo-audio property (NOT playsInSilentModeIOS)
+        shouldPlayInBackground: true,    // expo-audio property (NOT staysActiveInBackground)
+        interruptionMode:       'doNotMix', // prevents other audio from interrupting/stopping playback
+      });
+    } catch {
+      // Ignore — some expo-audio versions have no-op setAudioModeAsync
+    }
   }
 }
 
@@ -372,14 +584,57 @@ export function isLockscreenAudioSupported(): boolean {
   return true;
 }
 
-async function _createAndPlaySound(uri: string, volume: number): Promise<any> {
-  const ea = _getExpoAudio();
-  if (!ea?.createAudioPlayer) throw new Error('Audio unavailable');
-  const player = ea.createAudioPlayer({ uri });
-  player.volume = Math.max(0, Math.min(1, volume));
-  player.loop = true;
+/**
+ * Start crossfade-looping playback of a URI on native.
+ * Returns the XfadeState so `stopAmbientSound` can tear it down.
+ */
+async function _startCrossfadeEngine(
+  uri: string,
+  volume: number,
+  meta?: { name: string; category: string; emoji: string },
+): Promise<XfadeState> {
+  const state: XfadeState = {
+    active: null, next: null,
+    scheduleTimer: null, rampInterval: null,
+    targetVol: volume,
+    uri, meta,
+    stopped: false, duration: 0,
+  };
+
+  // Build the first player at full volume
+  const player = await _makeCrossfadePlayer(uri, volume, meta);
+  state.active = player;
+
+  // Play it
   player.play();
-  return player;
+
+  if (Platform.OS === 'ios') {
+    try {
+      const ea2 = _getExpoAudio();
+      if (ea2?.AudioSession?.setActive) await ea2.AudioSession.setActive(true);
+    } catch {}
+  }
+
+  // Poll for duration then schedule first crossfade
+  let waited = 0;
+  const poll = setInterval(() => {
+    waited += 100;
+    const dur = _getPlayerDuration(state.active);
+    if (dur > 1 || waited > 6000) {
+      clearInterval(poll);
+      if (!state.stopped) {
+        // For short files or when duration isn't readable, fall back to loop = true
+        if (dur < NATIVE_XFADE_LOOKAHEAD_SECS + 1) {
+          try { state.active.loop = true; } catch {}
+        } else {
+          state.duration = dur;
+          _scheduleNativeCrossfade(state, dur);
+        }
+      }
+    }
+  }, 100);
+
+  return state;
 }
 
 function _startSessionTimer(): void {
@@ -397,36 +652,53 @@ export async function playAmbientSound(
   const myToken = ++_genToken;
 
   // Stop previous sound non-blocking
-  const prevSound = _avSound;
-  _avSound = null;
+  if (_xfade) {
+    const old = _xfade;
+    _xfade = null;
+    old.stopped = true;
+    if (old.scheduleTimer) clearTimeout(old.scheduleTimer);
+    if (old.rampInterval) clearInterval(old.rampInterval);
+    _destroyPlayer(old.active);
+    _destroyPlayer(old.next);
+  }
   if (_avSessionTimer) { clearInterval(_avSessionTimer); _avSessionTimer = null; }
   _avSessionSecs = 0;
-  if (prevSound) { try { prevSound.pause(); prevSound.remove(); } catch {} }
 
   if (Platform.OS === 'web') return;
 
+  // Ensure audio session is active before playing.
+  // configureAudioSession may have been called at startup, but calling it again
+  // here guarantees the session is in playback mode even if the recording flow
+  // changed it or the app returned from background without re-configuring.
+  try { await configureAudioSession(_isPro); } catch {}
+
   const isDsp = DSP_ONLY_IDS.has(soundId);
+
+  // ── Helper: start crossfade engine and store state ────────────────────────
+  const startWithUri = async (uri: string) => {
+    if (myToken !== _genToken) return;
+    const state = await _startCrossfadeEngine(uri, volume, _meta);
+    if (myToken !== _genToken) {
+      state.stopped = true;
+      _destroyPlayer(state.active);
+      return;
+    }
+    _xfade = state;
+    _startSessionTimer();
+  };
 
   // DSP noise colors
   if (isDsp) {
     try {
       const cached = await _getSoundFilePath(soundId);
-      if (cached && myToken === _genToken) {
-        const sound = await _createAndPlaySound(cached, volume);
-        if (myToken !== _genToken) { try { sound.pause(); sound.remove(); } catch {} return; }
-        _avSound = sound; _startSessionTimer(); return;
-      }
+      if (cached && myToken === _genToken) { await startWithUri(cached); return; }
     } catch {}
     const type = SOUND_ID_TO_TYPE[soundId];
     if (!type || myToken !== _genToken) return;
     const uri = await new Promise<string>((res, rej) => setTimeout(() => { try { res(buildSeamlessWav(type)); } catch(e){ rej(e); } }, 0));
     if (myToken !== _genToken) return;
-    try {
-      const sound = await _createAndPlaySound(uri, volume);
-      if (myToken !== _genToken) { try { sound.pause(); sound.remove(); } catch {} return; }
-      _avSound = sound; _startSessionTimer();
-      _ensureSoundCached(soundId).catch(() => {});
-    } catch {}
+    await startWithUri(uri);
+    _ensureSoundCached(soundId).catch(() => {});
     return;
   }
 
@@ -437,20 +709,12 @@ export async function playAmbientSound(
     if (!type || myToken !== _genToken) return;
     try {
       const cached = await _getSoundFilePath(soundId);
-      if (cached && myToken === _genToken) {
-        const sound = await _createAndPlaySound(cached, volume);
-        if (myToken !== _genToken) { try { sound.pause(); sound.remove(); } catch {} return; }
-        _avSound = sound; _startSessionTimer(); return;
-      }
+      if (cached && myToken === _genToken) { await startWithUri(cached); return; }
     } catch {}
     const uri = await new Promise<string>((res, rej) => setTimeout(() => { try { res(buildSeamlessWav(type)); } catch(e){ rej(e); } }, 0));
     if (myToken !== _genToken) return;
-    try {
-      const sound = await _createAndPlaySound(uri, volume);
-      if (myToken !== _genToken) { try { sound.pause(); sound.remove(); } catch {} return; }
-      _avSound = sound; _startSessionTimer();
-      _ensureSoundCached(soundId).catch(() => {});
-    } catch {}
+    await startWithUri(uri);
+    _ensureSoundCached(soundId).catch(() => {});
     return;
   }
 
@@ -460,44 +724,57 @@ export async function playAmbientSound(
 
   const firstUrl = cached ?? cdnUrls[0];
   try {
-    const sound = await _createAndPlaySound(firstUrl, volume);
-    if (myToken !== _genToken) { try { sound.pause(); sound.remove(); } catch {} return; }
-    _avSound = sound; _startSessionTimer();
+    await startWithUri(firstUrl);
     if (!cached) _ensureSoundCached(soundId).catch(() => {});
     return;
   } catch {}
 
   for (let i = 1; i < cdnUrls.length; i++) {
     if (myToken !== _genToken) return;
-    try {
-      const sound = await _createAndPlaySound(cdnUrls[i], volume);
-      if (myToken !== _genToken) { try { sound.pause(); sound.remove(); } catch {} return; }
-      _avSound = sound; _startSessionTimer(); return;
-    } catch {}
+    try { await startWithUri(cdnUrls[i]); return; } catch {}
   }
 }
 
 export async function stopAmbientSound(): Promise<number> {
   const elapsed = _avSessionSecs;
   _genToken++;
-  const s = _avSound;
-  _avSound = null;
   if (_avSessionTimer) { clearInterval(_avSessionTimer); _avSessionTimer = null; }
   _avSessionSecs = 0;
-  if (s) { try { s.pause(); s.remove(); } catch {} }
+
+  if (_xfade) {
+    const state = _xfade;
+    _xfade = null;
+    state.stopped = true;
+    if (state.scheduleTimer) clearTimeout(state.scheduleTimer);
+    if (state.rampInterval) clearInterval(state.rampInterval);
+    _destroyPlayer(state.active);
+    _destroyPlayer(state.next);
+  }
+
   return elapsed;
 }
 
 export async function setAmbientVolume(volume: number): Promise<void> {
-  if (_avSound) { try { _avSound.volume = Math.max(0, Math.min(1, volume)); } catch {} }
+  const v = Math.max(0, Math.min(1, volume));
+  if (_xfade) {
+    _xfade.targetVol = v;
+    try { if (_xfade.active) _xfade.active.volume = v; } catch {}
+    // Don't update next — it's in the middle of a ramp
+  }
 }
 
 export async function pauseAmbientSound(): Promise<void> {
-  if (_avSound) { try { _avSound.pause(); } catch {} }
+  if (_xfade) {
+    try { _xfade.active?.pause(); } catch {}
+    try { _xfade.next?.pause(); } catch {}
+  }
 }
 
 export async function resumeAmbientSound(): Promise<void> {
-  if (_avSound) { try { _avSound.play(); } catch {} }
+  if (_xfade) {
+    try { _xfade.active?.play(); } catch {}
+    try { _xfade.next?.play(); } catch {}
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

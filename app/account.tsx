@@ -1,9 +1,10 @@
 /**
  * MyMoodMapp — Account Screen
  * Shows subscription status, upgrade options, and manage/cancel links.
+ * iOS/Android: RevenueCat IAP ONLY — Stripe checkout is web-only (App Store rule 3.1.1)
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,6 +13,7 @@ import {
   Pressable,
   ActivityIndicator,
   Linking,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -23,6 +25,12 @@ import { useApp } from '@/hooks/useApp';
 import { DarkColors, Typography, Spacing, Radius, Shadows, getGlass } from '@/constants/theme';
 import { isOwnerEmail } from '@/constants/config';
 import { startCheckout, openCustomerPortal, SUBSCRIPTION_PLANS } from '@/services/subscription';
+import {
+  getRevenueCatOfferings,
+  purchaseRevenueCat,
+  restoreRevenueCatPurchases,
+  type RCPackage,
+} from '@/services/revenuecat';
 import { getSupabaseClient } from '@/template';
 
 function makeStyles(C: typeof DarkColors, isDark = true) {
@@ -78,6 +86,7 @@ function makeStyles(C: typeof DarkColors, isDark = true) {
     planCta: { margin: Spacing.md, marginTop: 0, borderRadius: Radius.lg, paddingVertical: 14, alignItems: 'center' },
     planCtaText: { fontSize: Typography.fontSizes.md, fontWeight: '800', color: '#08091A', includeFontPadding: false },
     trialNote: { fontSize: Typography.fontSizes.xs, color: C.textMuted, textAlign: 'center', paddingBottom: Spacing.md, includeFontPadding: false },
+    iapDisclosure: { fontSize: 10, color: C.textMuted, textAlign: 'center', lineHeight: 15, paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm, includeFontPadding: false },
 
     // Free tier info
     freePlanCard: { backgroundColor: G.cardBg, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: G.cardBorder, gap: Spacing.sm, marginBottom: Spacing.xl },
@@ -102,6 +111,14 @@ export default function AccountScreen() {
 
   const [checkingOut, setCheckingOut] = useState(false);
   const [managingPortal, setManagingPortal] = useState(false);
+  const [restoringPurchases, setRestoringPurchases] = useState(false);
+  const [rcPackages, setRcPackages] = useState<{ pro: RCPackage | null; therapistPro: RCPackage | null }>({ pro: null, therapistPro: null });
+
+  // Load RevenueCat offerings on native only
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    getRevenueCatOfferings().then(setRcPackages).catch(() => {});
+  }, []);
 
   const isOwner = isOwnerEmail(user?.email);
   const isPro = subscriptionTier === 'pro';
@@ -122,15 +139,76 @@ export default function AccountScreen() {
 
   const tierColor = isOwner || isTherapistPro ? C.secondary : isPro ? C.primary : C.textMuted;
 
+  // ── Purchase handler — Web: Stripe | Native: RevenueCat IAP ONLY ─────────
   const handleUpgrade = async (priceId: string, planName: string) => {
+    if (Platform.OS === 'web') {
+      // Web only: Stripe checkout is permitted
+      setCheckingOut(true);
+      const { error } = await startCheckout(priceId);
+      setCheckingOut(false);
+      if (error) { showAlert('Checkout failed', error); return; }
+      await refreshSubscription();
+      return;
+    }
+
+    // iOS / Android: Apple/Google IAP via RevenueCat ONLY
+    // Stripe checkout must NEVER appear on native (App Store rule 3.1.1)
     setCheckingOut(true);
-    const { error } = await startCheckout(priceId);
-    setCheckingOut(false);
-    if (error) { showAlert('Checkout failed', error); return; }
-    await refreshSubscription();
+    try {
+      const isTherapistPlan = planName.toLowerCase().includes('therapist');
+      let pkg = isTherapistPlan ? rcPackages.therapistPro : rcPackages.pro;
+
+      if (!pkg) {
+        const freshPkgs = await getRevenueCatOfferings();
+        setRcPackages(freshPkgs);
+        pkg = isTherapistPlan ? freshPkgs.therapistPro : freshPkgs.pro;
+      }
+
+      if (!pkg) {
+        showAlert(
+          'Store unavailable',
+          'Could not connect to the App Store. Please check your internet connection and try again.',
+        );
+        return;
+      }
+
+      const { success, tier, error } = await purchaseRevenueCat(pkg);
+      if (error) { showAlert('Purchase failed', error); return; }
+      if (success) {
+        await refreshSubscription();
+        showAlert('Subscription activated!', 'Your 30-day free trial has started.');
+      }
+    } finally {
+      setCheckingOut(false);
+    }
+  };
+
+  const handleRestorePurchases = async () => {
+    if (Platform.OS === 'web') return;
+    setRestoringPurchases(true);
+    try {
+      const { restored, tier, error } = await restoreRevenueCatPurchases();
+      if (error) { showAlert('Restore failed', error); return; }
+      if (restored) {
+        await refreshSubscription();
+        showAlert('Purchases restored!', `Your ${tier === 'therapist_pro' ? 'Therapist Pro' : 'Pro'} subscription has been restored.`);
+      } else {
+        showAlert('No purchases found', 'No active subscriptions were found for this Apple ID.');
+      }
+    } finally {
+      setRestoringPurchases(false);
+    }
   };
 
   const handleManage = async () => {
+    if (Platform.OS !== 'web') {
+      // On native, direct users to OS subscription settings — never Stripe portal
+      const url = Platform.OS === 'ios'
+        ? 'https://apps.apple.com/account/subscriptions'
+        : 'https://play.google.com/store/account/subscriptions';
+      Linking.openURL(url).catch(() => {});
+      return;
+    }
     setManagingPortal(true);
     const { error } = await openCustomerPortal();
     setManagingPortal(false);
@@ -139,18 +217,27 @@ export default function AccountScreen() {
   };
 
   const handleCancel = () => {
+    const cancelMsg = Platform.OS === 'ios'
+      ? 'To cancel, go to Settings → Apple ID → Subscriptions and cancel MyMoodMapp before your next renewal date.'
+      : Platform.OS === 'android'
+      ? 'To cancel, go to Google Play → Subscriptions and cancel MyMoodMapp before your next renewal date.'
+      : 'You can cancel via the billing portal. You will keep access until the end of your current billing period.';
+
     showAlert(
-      'Cancel subscription?',
-      'You can cancel via the billing portal. You will keep access until the end of your current billing period.',
-      [
-        { text: 'Keep plan', style: 'cancel' },
-        { text: 'Open billing portal', style: 'destructive', onPress: handleManage },
-      ]
+      'Cancel subscription',
+      cancelMsg,
+      Platform.OS === 'web'
+        ? [
+            { text: 'Keep plan', style: 'cancel' },
+            { text: 'Open billing portal', style: 'destructive', onPress: handleManage },
+          ]
+        : [{ text: 'OK', style: 'cancel' }]
     );
   };
 
-  // Listen for Stripe redirect back from checkout
+  // Listen for Stripe redirect back from checkout (web only)
   React.useEffect(() => {
+    if (Platform.OS !== 'web') return;
     const sub = Linking.addEventListener('url', ({ url }) => {
       if (url.includes('subscription/success')) {
         refreshSubscription();
@@ -183,10 +270,8 @@ export default function AccountScreen() {
                       const supabase = getSupabaseClient();
                       const { error } = await supabase.functions.invoke('delete-account', { body: {} });
                       if (error) throw error;
-                      // Log out after deletion
                       await supabase.auth.signOut();
                     } catch (e: any) {
-                      // Fallback: sign out and inform user
                       showAlert(
                         'Account deletion initiated',
                         'Your account has been marked for deletion. All data will be removed within 24 hours. You have been signed out.',
@@ -292,7 +377,16 @@ export default function AccountScreen() {
               >
                 {managingPortal
                   ? <ActivityIndicator size="small" color={C.textPrimary} />
-                  : <><MaterialIcons name="open-in-new" size={16} color={C.textPrimary} /><Text style={styles.manageBtnText}>Manage billing & invoices</Text></>}
+                  : <>
+                    <MaterialIcons name="open-in-new" size={16} color={C.textPrimary} />
+                    <Text style={styles.manageBtnText}>
+                      {Platform.OS === 'ios'
+                        ? 'Manage in Settings → Apple ID'
+                        : Platform.OS === 'android'
+                        ? 'Manage in Google Play'
+                        : 'Manage billing & invoices'}
+                    </Text>
+                  </>}
               </Pressable>
 
               <Pressable
@@ -301,7 +395,11 @@ export default function AccountScreen() {
                 style={({ pressed }) => [styles.cancelBtn, pressed && { opacity: 0.7 }]}
               >
                 <MaterialIcons name="cancel" size={16} color={C.error} />
-                <Text style={styles.cancelBtnText}>Cancel subscription</Text>
+                <Text style={styles.cancelBtnText}>
+                  {Platform.OS === 'ios'
+                    ? 'Cancel in Settings → Apple ID → Subscriptions'
+                    : 'Cancel subscription'}
+                </Text>
               </Pressable>
             </View>
           </>
@@ -340,7 +438,11 @@ export default function AccountScreen() {
                   </View>
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={[styles.planCardName, { color: C.primary }]}>Pro</Text>
-                    <Text style={[styles.planCardPrice, { color: C.primary + 'CC' }]}>$3.99 / month · 7-day free trial</Text>
+                    <Text style={[styles.planCardPrice, { color: C.primary + 'CC' }]}>
+                      {Platform.OS !== 'web' && rcPackages.pro
+                        ? rcPackages.pro.product.priceString + '/mo'
+                        : '$3.99/mo'}{' '}· 30-day free trial
+                    </Text>
                   </View>
                 </View>
                 <View style={styles.planCardFeatures}>
@@ -364,9 +466,28 @@ export default function AccountScreen() {
                 >
                   {checkingOut
                     ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={styles.planCtaText}>Get Pro →</Text>}
+                    : <Text style={styles.planCtaText}>Start 30-day free trial →</Text>}
                 </Pressable>
-                <Text style={styles.trialNote}>Cancel anytime. No charge for 7 days.</Text>
+                {Platform.OS === 'ios' ? (
+                  <Text style={styles.iapDisclosure}>
+                    {'Free for 30 days, then '}
+                    {rcPackages.pro ? rcPackages.pro.product.priceString : '$3.99'}
+                    {'/month. Payment charged to your Apple ID at confirmation. Subscription auto-renews unless cancelled at least 24 hours before the end of the current period. Manage or cancel in Settings → Apple ID → Subscriptions.'}
+                  </Text>
+                ) : (
+                  <Text style={styles.trialNote}>Cancel anytime. No charge for 30 days.</Text>
+                )}
+                {Platform.OS !== 'web' ? (
+                  <Pressable
+                    onPress={handleRestorePurchases}
+                    disabled={restoringPurchases}
+                    style={({ pressed }) => [{ alignSelf: 'center', marginBottom: Spacing.sm }, pressed && { opacity: 0.6 }]}
+                  >
+                    {restoringPurchases
+                      ? <ActivityIndicator size="small" color={C.textMuted} />
+                      : <Text style={[styles.trialNote, { textDecorationLine: 'underline' }]}>Restore purchases</Text>}
+                  </Pressable>
+                ) : null}
               </View>
 
               {/* Therapist Pro */}
@@ -377,7 +498,11 @@ export default function AccountScreen() {
                   </View>
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={[styles.planCardName, { color: C.secondary }]}>Therapist Pro</Text>
-                    <Text style={[styles.planCardPrice, { color: C.secondary + 'CC' }]}>$9.99 / month · for professionals</Text>
+                    <Text style={[styles.planCardPrice, { color: C.secondary + 'CC' }]}>
+                      {Platform.OS !== 'web' && rcPackages.therapistPro
+                        ? rcPackages.therapistPro.product.priceString + '/mo'
+                        : '$9.99/mo'}{' '}· for professionals
+                    </Text>
                   </View>
                 </View>
                 <View style={styles.planCardFeatures}>
@@ -401,9 +526,17 @@ export default function AccountScreen() {
                 >
                   {checkingOut
                     ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={styles.planCtaText}>Get Therapist Pro →</Text>}
+                    : <Text style={styles.planCtaText}>Start 30-day free trial →</Text>}
                 </Pressable>
-                <Text style={styles.trialNote}>For licensed mental health professionals.</Text>
+                {Platform.OS === 'ios' ? (
+                  <Text style={styles.iapDisclosure}>
+                    {'Free for 30 days, then '}
+                    {rcPackages.therapistPro ? rcPackages.therapistPro.product.priceString : '$9.99'}
+                    {'/month. Payment charged to your Apple ID at confirmation. Subscription auto-renews unless cancelled at least 24 hours before the end of the current period. Manage or cancel in Settings → Apple ID → Subscriptions.'}
+                  </Text>
+                ) : (
+                  <Text style={styles.trialNote}>For licensed mental health professionals.</Text>
+                )}
               </View>
             </View>
           </>
@@ -440,7 +573,11 @@ export default function AccountScreen() {
                 </View>
                 <View style={{ flex: 1, gap: 2 }}>
                   <Text style={[styles.planCardName, { color: C.secondary }]}>Therapist Pro</Text>
-                  <Text style={[styles.planCardPrice, { color: C.secondary + 'CC' }]}>$9.99 / month</Text>
+                  <Text style={[styles.planCardPrice, { color: C.secondary + 'CC' }]}>
+                    {Platform.OS !== 'web' && rcPackages.therapistPro
+                      ? rcPackages.therapistPro.product.priceString + '/mo'
+                      : '$9.99/mo'}
+                  </Text>
                 </View>
               </View>
               <View style={styles.planCardFeatures}>
@@ -464,7 +601,15 @@ export default function AccountScreen() {
                   ? <ActivityIndicator size="small" color="#fff" />
                   : <Text style={styles.planCtaText}>Upgrade to Therapist Pro →</Text>}
               </Pressable>
-              <Text style={styles.trialNote}>For licensed mental health professionals.</Text>
+              {Platform.OS === 'ios' ? (
+                <Text style={styles.iapDisclosure}>
+                  {'Free for 30 days, then '}
+                  {rcPackages.therapistPro ? rcPackages.therapistPro.product.priceString : '$9.99'}
+                  {'/month. Payment charged to your Apple ID at confirmation. Cancel in Settings → Apple ID → Subscriptions.'}
+                </Text>
+              ) : (
+                <Text style={styles.trialNote}>For licensed mental health professionals.</Text>
+              )}
             </View>
           </>
         ) : null}

@@ -42,6 +42,7 @@ const C = {
   gradient2: '#F5A623',
 };
 
+const MOODPRINT_ICON = require('@/assets/moodprint-icon.png');
 const APP_STORE_URL  = 'https://apps.apple.com/app/mymoodmapp/id000000000';
 const PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=com.mymoodmapp';
 
@@ -149,9 +150,7 @@ export default function LandingScreen() {
         <View style={[s.nav, { width: '100%', paddingHorizontal: hPad }]}>
           <View style={[s.navInner, { width: '100%', maxWidth: maxW, alignSelf: 'center' }]}>
             <View style={s.navBrand}>
-              <View style={[s.navLogo, isMobile && { width: 30, height: 30 }]}>
-                <Text style={{ fontSize: isMobile ? 16 : 20 }}>😌</Text>
-              </View>
+              <Image source={MOODPRINT_ICON} style={[s.navLogo, isMobile && { width: 30, height: 30 }, { borderRadius: 10, overflow: 'hidden' }]} contentFit="cover" />
               <Text style={[s.navTitle, isMobile && { fontSize: 15 }]}>MyMoodMapp</Text>
             </View>
             <View style={s.navRight}>
@@ -655,9 +654,7 @@ export default function LandingScreen() {
         <View style={[s.finalSection, { width: '100%', paddingHorizontal: hPad, paddingVertical: isMobile ? 56 : 100 }]}>
           <View style={[s.finalGlow]} />
           <View style={{ width: '100%', maxWidth: maxW, alignSelf: 'center', alignItems: 'center', gap: isMobile ? 16 : 24, position: 'relative' }}>
-            <View style={[s.finalIcon, isMobile && { width: 64, height: 64 }]}>
-              <Text style={{ fontSize: isMobile ? 32 : 40 }}>😌</Text>
-            </View>
+            <Image source={MOODPRINT_ICON} style={[s.finalIcon, isMobile && { width: 96, height: 96 }, { borderRadius: 24, overflow: 'hidden' }]} contentFit="cover" />
             <Text style={[s.finalTitle, { fontSize: isDesktop ? 48 : isMobile ? 24 : 38, textAlign: 'center' }]}>
               Try Pro free for 30 days
             </Text>
@@ -704,9 +701,7 @@ export default function LandingScreen() {
         <View style={[s.footer, { width: '100%', paddingHorizontal: hPad }]}>
           <View style={[s.footerInner, { width: '100%', maxWidth: maxW, flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'flex-start' : 'center' }]}>
             <View style={s.footerBrand}>
-              <View style={s.navLogo}>
-                <Text style={{ fontSize: 16 }}>😌</Text>
-              </View>
+              <Image source={MOODPRINT_ICON} style={[s.navLogo, { borderRadius: 10, overflow: 'hidden' }]} contentFit="cover" />
               <Text style={s.navTitle}>MyMoodMapp</Text>
             </View>
             <Text style={s.footerTagline}>Track what moves you.</Text>
@@ -762,7 +757,7 @@ const s = StyleSheet.create({
   nav:           { backgroundColor: 'rgba(0,0,0,0.92)', borderBottomWidth: 1, borderBottomColor: C.borderSubtle, paddingVertical: 12, alignItems: 'center', zIndex: 100 },
   navInner:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   navBrand:      { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  navLogo:       { width: 36, height: 36, borderRadius: 10, backgroundColor: C.primaryGlow, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.primary + '30' },
+  navLogo:       { width: 36, height: 36, borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: C.primary + '30' },
   navTitle:      { fontSize: 17, fontWeight: '800', color: '#fff', includeFontPadding: false },
   navRight:      { flexDirection: 'row', alignItems: 'center', gap: 8 },
   navLinks:      { flexDirection: 'row', gap: 24, marginRight: 16 },
@@ -874,7 +869,7 @@ const s = StyleSheet.create({
   pricingNote:     { fontSize: 12, color: 'rgba(255,255,255,0.3)', textAlign: 'center', includeFontPadding: false },
   finalSection: { paddingHorizontal: 24, backgroundColor: '#050505', alignItems: 'center', overflow: 'hidden', position: 'relative' },
   finalGlow:    { position: 'absolute', width: 400, height: 400, borderRadius: 200, backgroundColor: C.primaryGlow, alignSelf: 'center', top: -100, zIndex: 0 },
-  finalIcon:    { width: 72, height: 72, borderRadius: 20, backgroundColor: C.primaryGlow, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: C.primary + '40' },
+  finalIcon:    { width: 120, height: 120, borderRadius: 24, overflow: 'hidden', borderWidth: 2, borderColor: C.primary + '40' },
   finalTitle:   { fontWeight: '900', color: '#fff', includeFontPadding: false },
   finalSub:     { color: 'rgba(255,255,255,0.55)', includeFontPadding: false },
   footer:        { backgroundColor: '#000', borderTopWidth: 1, borderTopColor: C.borderSubtle, paddingTop: 32, paddingBottom: 24, alignItems: 'center', gap: 14 },

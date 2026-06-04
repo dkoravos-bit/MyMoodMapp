@@ -27,11 +27,14 @@ if (isEASBuild) {
   //    is never linked. WebRTC's +load method crashes iOS 26 on launch.
   easNativePlugins.push('./plugins/withoutWebRTC');
 
-  // 2. Override RCTFatal with a log-and-swallow handler so any OTHER
-  //    uncaught ObjC exceptions don't abort() the process.
+  // 2. Override RCTFatal at the native ObjC level so any JS exception that
+  //    reaches the native handler is swallowed instead of calling
+  //    objc_exception_rethrow → std::terminate → abort → SIGABRT.
+  //    Uses withDangerousMod + direct pbxproj string manipulation (no xcode
+  //    npm package APIs that previously caused prebuild failures).
   easNativePlugins.push('./plugins/withRCTFatalOverride');
 
-  // 3. Sentry dSYM + source map upload — only if the package is installed.
+  // 2. Sentry dSYM + source map upload — only if the package is installed.
   //    @sentry/react-native is optional; skip gracefully if absent.
   try {
     require.resolve('@sentry/react-native/expo');

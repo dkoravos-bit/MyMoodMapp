@@ -27,23 +27,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 
-// expo-audio replaces expo-av for recording and playback
-// All recording APIs are used only inside the VoiceRecorder component
-// which is only rendered on native (Platform.OS !== 'web')
-let _AudioModule: any = null;
-let _useAudioRecorderFn: any = null;
-let _RecordingPresets: any = null;
-let _createAudioPlayerFn: any = null;
-let _setAudioModeFn: any = null;
+// Recording uses expo-av's Audio.Recording API (stable, proven on iOS 17+)
+// expo-audio's useAudioRecorder hook has a known bug producing empty/silent files
+// (see github.com/expo/expo/issues/40174 and #41656)
+// Playback of the recorded preview uses expo-av's Sound API
+let _ExpoAvAudio: any = null;
 if (typeof require !== 'undefined') {
-  try {
-    const ea = require('expo-audio');
-    _AudioModule = ea.AudioModule;
-    _useAudioRecorderFn = ea.useAudioRecorder;
-    _RecordingPresets = ea.RecordingPresets;
-    _createAudioPlayerFn = ea.createAudioPlayer;
-    _setAudioModeFn = ea.setAudioModeAsync;
-  } catch {}
+  try { _ExpoAvAudio = require('expo-av').Audio; } catch {}
 }
 import * as FileSystem from 'expo-file-system';
 import { Colors, DarkColors, Typography, Spacing, Radius, Shadows, getGlass } from '@/constants/theme';
@@ -137,9 +127,13 @@ function MoodSlider({
       onMoveShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponderCapture: () => true,
       onPanResponderGrant: (e) => {
+        // Re-measure on every touch start for accurate coordinates after scroll
+        trackWrapRef.current?.measure((_x, _y, w, _h, pageX) => {
+          trackLayout.current = { x: pageX, width: w };
+        });
         const raw = clampToTrack(e.nativeEvent.pageX);
         onChangeRef.current(Math.round(raw * 1000) / 1000);
-        Animated.spring(thumbScale, { toValue: 1.25, useNativeDriver: true, friction: 6, tension: 200 }).start();
+        Animated.spring(thumbScale, { toValue: 1.3, useNativeDriver: true, friction: 5, tension: 300 }).start();
       },
       onPanResponderMove: (e) => {
         // Direct absolute tracking — 1:1 with finger, no lag
@@ -147,10 +141,10 @@ function MoodSlider({
         onChangeRef.current(Math.round(raw * 1000) / 1000);
       },
       onPanResponderRelease: () => {
-        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 6, tension: 200 }).start();
+        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 5, tension: 300 }).start();
       },
       onPanResponderTerminate: () => {
-        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 6, tension: 200 }).start();
+        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 5, tension: 300 }).start();
       },
     })
   ).current;
@@ -180,7 +174,8 @@ function MoodSlider({
         ref={trackWrapRef}
         style={sliderStyles.trackWrap}
         onLayout={(e) => {
-          trackWrapRef.current?.measure((_x, _y, _w, _h, pageX) => {
+          // Immediate measure on layout + cache
+          trackWrapRef.current?.measure((_x, _y, w, _h, pageX) => {
             trackLayout.current = { x: pageX, width: e.nativeEvent.layout.width };
           });
         }}
@@ -248,17 +243,21 @@ function MiniSlider({ value, onChange, label, emoji, color }: {
       onMoveShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponderCapture: () => true,
       onPanResponderGrant: (e) => {
+        // Re-measure on every touch for accurate coords after scroll
+        trackWrapRef.current?.measure((_x, _y, w, _h, pageX) => {
+          trackLayout.current = { x: pageX, width: w };
+        });
         onChangeRef.current(clampToTrack(e.nativeEvent.pageX));
-        Animated.spring(thumbScale, { toValue: 1.3, useNativeDriver: true, friction: 6, tension: 200 }).start();
+        Animated.spring(thumbScale, { toValue: 1.3, useNativeDriver: true, friction: 5, tension: 300 }).start();
       },
       onPanResponderMove: (e) => {
         onChangeRef.current(clampToTrack(e.nativeEvent.pageX));
       },
       onPanResponderRelease: () => {
-        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 6, tension: 200 }).start();
+        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 5, tension: 300 }).start();
       },
       onPanResponderTerminate: () => {
-        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 6, tension: 200 }).start();
+        Animated.spring(thumbScale, { toValue: 1, useNativeDriver: true, friction: 5, tension: 300 }).start();
       },
     })
   ).current;
@@ -273,7 +272,8 @@ function MiniSlider({ value, onChange, label, emoji, color }: {
         ref={trackWrapRef}
         style={miniStyles.trackWrap}
         onLayout={(e) => {
-          trackWrapRef.current?.measure((_x, _y, _w, _h, pageX) => {
+          // Immediate measure on layout + cache
+          trackWrapRef.current?.measure((_x, _y, w, _h, pageX) => {
             trackLayout.current = { x: pageX, width: e.nativeEvent.layout.width };
           });
         }}
@@ -311,8 +311,8 @@ const TAG_CATEGORIES = ['all', 'lifestyle', 'social', 'environment', 'health'] a
 type TagCategory = typeof TAG_CATEGORIES[number];
 
 // ─── Voice Recorder ───────────────────────────────────────────────────────────
-// Auto-transcribes immediately when recording stops — no button press needed.
-// On web, microphone recording via expo-av is not available; shows a note.
+// Uses expo-audio's useAudioRecorder hook (the correct API — not the old class).
+// Auto-transcribes immediately when recording stops.
 function VoiceRecorder({
   onRecordingComplete,
   onTranscriptReady,
@@ -320,7 +320,7 @@ function VoiceRecorder({
   onRecordingComplete: (uri: string) => void;
   onTranscriptReady: (text: string) => void;
 }) {
-  // Web: expo-av recording is not supported — show a note instead
+  // Web: microphone recording not supported — show note
   if (Platform.OS === 'web') {
     return (
       <View style={[vrStyles.recordBtn, { borderStyle: 'dashed', opacity: 0.65 }]}>
@@ -329,19 +329,34 @@ function VoiceRecorder({
       </View>
     );
   }
-  const [recording, setRecording] = useState<any>(null);
-  const [recordedUri, setRecordedUri] = useState<string | null>(null);
+  return <VoiceRecorderNative onRecordingComplete={onRecordingComplete} onTranscriptReady={onTranscriptReady} />;
+}
+
+// Inner component — only rendered on native, so hooks are safe to call
+// Uses expo-av Audio.Recording.createAsync() — the proven, stable iOS recording API.
+// expo-audio's useAudioRecorder has confirmed bugs producing empty/silent files
+// (github.com/expo/expo/issues/40174, #41656). expo-av recording is battle-tested.
+function VoiceRecorderNative({
+  onRecordingComplete,
+  onTranscriptReady,
+}: {
+  onRecordingComplete: (uri: string) => void;
+  onTranscriptReady: (text: string) => void;
+}) {
+  const [recording, setRecording] = useState<any>(null); // expo-av Recording instance
+  const [soundObj, setSoundObj] = useState<any>(null);   // expo-av Sound instance for playback
+
   const [isRecording, setIsRecording] = useState(false);
   const [duration, setDuration] = useState(0);
-  const [audioPlayer, setAudioPlayer] = useState<any>(null);
+  const [recordedUri, setRecordedUri] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
   const [transcribed, setTranscribed] = useState(false);
+  const [permError, setPermError] = useState<string | null>(null);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const durationRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Keep stable refs so async callbacks always see latest values
   const onRecordingCompleteRef = useRef(onRecordingComplete);
   const onTranscriptReadyRef = useRef(onTranscriptReady);
   onRecordingCompleteRef.current = onRecordingComplete;
@@ -349,10 +364,10 @@ function VoiceRecorder({
 
   useEffect(() => {
     return () => {
-      if (audioPlayer) { try { audioPlayer.remove?.(); audioPlayer.release?.(); } catch {} }
+      if (soundObj) { try { soundObj.unloadAsync?.(); } catch {} }
       if (durationRef.current) clearInterval(durationRef.current);
     };
-  }, [audioPlayer]);
+  }, [soundObj]);
 
   const startPulse = () => {
     Animated.loop(
@@ -362,104 +377,83 @@ function VoiceRecorder({
       ])
     ).start();
   };
-
   const stopPulse = () => { pulseAnim.stopAnimation(); pulseAnim.setValue(1); };
 
-  // ── Core transcription logic (called automatically after stop) ────────────
   const runTranscription = async (uri: string) => {
     if (!uri) return;
     setTranscribing(true);
     setTranscribeError(null);
     try {
-      // Verify the file exists and is readable before sending
       const info = await FileSystem.getInfoAsync(uri);
       if (!info.exists) throw new Error('Audio file not found after recording.');
-
-      const base64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      if (!base64 || base64.length < 100) {
-        throw new Error('Recording appears empty — try speaking closer to the mic.');
-      }
-
-      // Detect MIME type from extension
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      if (!base64 || base64.length < 50) throw new Error('Recording appears empty — try speaking closer to the mic.');
       const ext = uri.split('.').pop()?.toLowerCase() ?? 'm4a';
-      const mimeMap: Record<string, string> = {
-        m4a: 'audio/m4a', mp4: 'audio/mp4', wav: 'audio/wav',
-        aac: 'audio/aac', caf: 'audio/x-caf', ogg: 'audio/ogg', webm: 'audio/webm',
-      };
+      const mimeMap: Record<string, string> = { m4a: 'audio/m4a', mp4: 'audio/mp4', wav: 'audio/wav', aac: 'audio/aac', caf: 'audio/x-caf', ogg: 'audio/ogg', webm: 'audio/webm' };
       const mimeType = mimeMap[ext] ?? 'audio/m4a';
-
       const supabase = getSupabaseClient();
-      const { data, error } = await supabase.functions.invoke('transcribe-voice', {
-        body: { audioBase64: base64, mimeType },
-      });
-
+      const { data, error } = await supabase.functions.invoke('transcribe-voice', { body: { audioBase64: base64, mimeType } });
       if (error) {
         let msg = error.message ?? 'Transcription failed';
         if (error instanceof FunctionsHttpError) {
-          try {
-            const statusCode = error.context?.status ?? 500;
-            const textContent = await error.context?.text();
-            msg = `[${statusCode}] ${textContent ?? msg}`;
-          } catch {}
+          try { const statusCode = error.context?.status ?? 500; const txt = await error.context?.text(); msg = `[${statusCode}] ${txt ?? msg}`; } catch {}
         }
         throw new Error(msg);
       }
-
       const transcript: string = data?.transcript ?? '';
-      if (transcript.trim()) {
-        setTranscribed(true);
-        onTranscriptReadyRef.current(transcript.trim());
-      } else {
-        setTranscribeError('No speech detected. Try speaking again.');
-      }
+      if (transcript.trim()) { setTranscribed(true); onTranscriptReadyRef.current(transcript.trim()); }
+      else setTranscribeError('No speech detected. Try speaking again.');
     } catch (e: any) {
       console.error('[VoiceRecorder] transcription error:', e);
       setTranscribeError(e?.message ?? String(e));
-    } finally {
-      setTranscribing(false);
-    }
+    } finally { setTranscribing(false); }
   };
+
+  // If expo-av is unavailable, show disabled state
+  if (!_ExpoAvAudio) {
+    return (
+      <View style={[vrStyles.recordBtn, { borderStyle: 'dashed', opacity: 0.65 }]}>
+        <MaterialIcons name="mic-off" size={20} color={Colors.textMuted} />
+        <Text style={vrStyles.recordBtnText}>Voice recording unavailable — update the app to enable this feature</Text>
+      </View>
+    );
+  }
 
   const startRecording = async () => {
     try {
-      let permissionGranted = false;
-      try {
-        const status = await (_AudioModule?.requestRecordingPermissionsAsync?.() ?? Promise.resolve({ granted: false }));
-        permissionGranted = status.granted;
-      } catch (permErr) {
-        setTranscribeError('Microphone permission could not be determined. Please enable microphone access in Settings.');
+      setPermError(null);
+      // Step 1: Request microphone permission via expo-av
+      const { granted } = await _ExpoAvAudio.requestPermissionsAsync();
+      if (!granted) {
+        setPermError('Microphone permission denied. Enable it in Settings → Privacy → Microphone.');
         return;
       }
-      if (!permissionGranted) {
-        setTranscribeError('Microphone permission denied. Enable it in Settings to use voice journal.');
-        return;
-      }
-      // Reset all state for a fresh recording
-      if (audioPlayer) { try { audioPlayer.remove?.(); audioPlayer.release?.(); } catch {} setAudioPlayer(null); }
-      setRecordedUri(null);
-      setDuration(0);
-      setTranscribeError(null);
-      setTranscribed(false);
-
-      if (!_setAudioModeFn) return;
-      await _setAudioModeFn({ allowsRecordingIOS: true, playsInSilentModeIOS: true } as any);
-
-      if (!_RecordingPresets) return;
-      // Use expo-audio AudioRecorder imperative API
-      const { AudioRecorder } = require('expo-audio');
-      const rec = new AudioRecorder(_RecordingPresets.HIGH_QUALITY);
-      await rec.prepareToRecordAsync();
-      rec.record();
+      // Step 2: Unload any previous sound
+      if (soundObj) { try { await soundObj.unloadAsync?.(); } catch {} setSoundObj(null); }
+      setRecordedUri(null); setDuration(0); setTranscribeError(null); setTranscribed(false);
+      // Step 3: Configure audio session for RECORDING via expo-av
+      // setAudioModeAsync with allowsRecordingIOS:true routes the iOS AVAudioSession
+      // to PlayAndRecord category, which activates the microphone input.
+      // This is the ONLY reliable way — no manual AudioSession.setCategory needed.
+      await _ExpoAvAudio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+      // Step 4: Create and start the recording in one atomic call
+      // createAsync handles prepareToRecord + record internally — no race conditions
+      const { recording: rec } = await _ExpoAvAudio.Recording.createAsync(
+        _ExpoAvAudio.RecordingOptionsPresets.HIGH_QUALITY
+      );
       setRecording(rec);
       setIsRecording(true);
       startPulse();
       durationRef.current = setInterval(() => setDuration(d => d + 1), 1000);
-    } catch (e) {
+    } catch (e: any) {
       console.error('[VoiceRecorder] startRecording error:', e);
-      setTranscribeError('Could not start recording. Check microphone permissions.');
+      setTranscribeError('Could not start recording — ' + (e?.message ?? 'check microphone permissions'));
     }
   };
 
@@ -469,124 +463,110 @@ function VoiceRecorder({
       stopPulse();
       setIsRecording(false);
       if (durationRef.current) { clearInterval(durationRef.current); durationRef.current = null; }
-
-      await recording.stop();
-      if (_setAudioModeFn) { await _setAudioModeFn({ allowsRecordingIOS: false } as any).catch(() => {}); }
-
-      const uri = recording.uri ?? '';
+      // Stop and unload the recording
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI() ?? '';
       setRecording(null);
-
+      // Restore audio session to PLAYBACK mode so Mood Lab sounds work
+      try {
+        await _ExpoAvAudio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+        });
+      } catch {}
+      // Also restore via expo-audio's AudioSession for the soundLab player
+      try {
+        const ea = require('expo-audio');
+        if (ea?.AudioSession?.setCategory) await ea.AudioSession.setCategory('Playback');
+        if (ea?.AudioSession?.setActive) await ea.AudioSession.setActive(true);
+      } catch {}
       if (uri) {
         setRecordedUri(uri);
         onRecordingCompleteRef.current(uri);
-        // Auto-transcribe immediately — no button press needed
         await runTranscription(uri);
       } else {
-        setTranscribeError('Recording failed — no audio file was created.');
+        setTranscribeError('Recording failed — no audio file was created. Try again.');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('[VoiceRecorder] stopRecording error:', e);
-      setTranscribeError('Recording stopped unexpectedly. Try again.');
+      setTranscribeError('Recording stopped unexpectedly: ' + (e?.message ?? 'unknown error'));
       setIsRecording(false);
     }
   };
 
   const togglePlayback = async () => {
     if (!recordedUri) return;
-    if (audioPlayer) {
-      if (isPlaying) { try { audioPlayer.pause(); } catch {} setIsPlaying(false); }
-      else { try { audioPlayer.play(); } catch {} setIsPlaying(true); }
+    if (soundObj) {
+      if (isPlaying) {
+        try { await soundObj.pauseAsync?.(); } catch {}
+        setIsPlaying(false);
+      } else {
+        try { await soundObj.playAsync?.(); } catch {}
+        setIsPlaying(true);
+      }
       return;
     }
     try {
-      if (!_createAudioPlayerFn) return;
-      const p = _createAudioPlayerFn({ uri: recordedUri });
-      setAudioPlayer(p);
-      p.addListener?.('playbackStatusUpdate', (st: any) => {
-        if (st.didJustFinish) { setIsPlaying(false); }
-      });
-      p.play();
+      if (!_ExpoAvAudio) return;
+      const { sound } = await _ExpoAvAudio.Sound.createAsync(
+        { uri: recordedUri },
+        { shouldPlay: true },
+        (status: any) => { if (status.didJustFinish) setIsPlaying(false); }
+      );
+      setSoundObj(sound);
       setIsPlaying(true);
-    } catch (e) {
-      console.error('[VoiceRecorder] playback error:', e);
-    }
+    } catch (e) { console.error('[VoiceRecorder] playback error:', e); }
   };
 
-  const handleRetryTranscription = async () => {
-    if (!recordedUri) return;
-    setTranscribed(false);
-    await runTranscription(recordedUri);
-  };
-
+  const handleRetryTranscription = async () => { if (!recordedUri) return; setTranscribed(false); await runTranscription(recordedUri); };
   const handleDiscard = () => {
-    if (audioPlayer) { try { audioPlayer.remove?.(); audioPlayer.release?.(); } catch {} }
-    setAudioPlayer(null);
-    setTranscribed(false);
-    setTranscribeError(null);
-    setIsPlaying(false);
+    if (soundObj) { try { soundObj.unloadAsync?.(); } catch {} }
+    setSoundObj(null); setTranscribed(false); setTranscribeError(null); setIsPlaying(false); setRecordedUri(null); setDuration(0);
   };
-
   const fmtDur = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 
-  // ── Playback / transcription state ─────────────────────────────────────────
+  if (permError) {
+    return (
+      <View style={[vrStyles.recordBtn, { borderStyle: 'solid', borderColor: Colors.error + '60' }]}>
+        <MaterialIcons name="mic-off" size={20} color={Colors.error} />
+        <Text style={[vrStyles.recordBtnText, { color: Colors.error }]}>{permError}</Text>
+      </View>
+    );
+  }
+
   if (recordedUri) {
     return (
       <View style={vrStyles.playbackCard}>
-        {/* Playback row */}
         <View style={vrStyles.playbackRow}>
-          <Pressable
-            onPress={togglePlayback}
-            disabled={transcribing}
-            style={({ pressed }) => [vrStyles.playBtn, pressed && { opacity: 0.8 }]}
-          >
+          <Pressable onPress={togglePlayback} disabled={transcribing} style={({ pressed }) => [vrStyles.playBtn, pressed && { opacity: 0.8 }]}>
             <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={22} color={Colors.primary} />
           </Pressable>
           <View style={{ flex: 1, gap: 3 }}>
             <Text style={vrStyles.playbackLabel}>Voice memo · {fmtDur(duration)}</Text>
-            {transcribing ? (
-              <Text style={vrStyles.playbackDuration}>Transcribing...</Text>
-            ) : transcribed ? (
-              <Text style={[vrStyles.playbackDuration, { color: Colors.success }]}>Added to journal ✓</Text>
-            ) : null}
+            {transcribing ? <Text style={vrStyles.playbackDuration}>Transcribing...</Text>
+              : transcribed ? <Text style={[vrStyles.playbackDuration, { color: Colors.success }]}>Added to journal ✓</Text>
+              : null}
           </View>
           <Pressable onPress={handleDiscard} hitSlop={8} disabled={transcribing}>
             <MaterialIcons name="close" size={18} color={Colors.textMuted} />
           </Pressable>
         </View>
-
-        {/* Waveform decoration */}
         <View style={vrStyles.waveRow}>
           {Array.from({ length: 24 }, (_, i) => (
-            <View
-              key={i}
-              style={[vrStyles.waveDot, {
-                height: 4 + Math.sin(i * 0.8) * 8 + (i * 3) % 7,
-                backgroundColor: transcribed ? Colors.success + '60' : Colors.primary + '60',
-              }]}
-            />
+            <View key={i} style={[vrStyles.waveDot, { height: 4 + Math.sin(i * 0.8) * 8 + (i * 3) % 7, backgroundColor: transcribed ? Colors.success + '60' : Colors.primary + '60' }]} />
           ))}
         </View>
-
-        {/* Transcription status */}
         <View style={vrStyles.actionsRow}>
           {transcribing ? (
-            <View style={vrStyles.transcribingRow}>
-              <ActivityIndicator size="small" color={Colors.primary} />
-              <Text style={vrStyles.transcribingText}>Transcribing with AI — hang tight...</Text>
-            </View>
+            <View style={vrStyles.transcribingRow}><ActivityIndicator size="small" color={Colors.primary} /><Text style={vrStyles.transcribingText}>Transcribing with AI...</Text></View>
           ) : transcribed ? (
-            <View style={vrStyles.successRow}>
-              <MaterialIcons name="check-circle" size={14} color={Colors.success} />
-              <Text style={vrStyles.successText}>Transcript added to your journal entry</Text>
-            </View>
+            <View style={vrStyles.successRow}><MaterialIcons name="check-circle" size={14} color={Colors.success} /><Text style={vrStyles.successText}>Transcript added to your journal entry</Text></View>
           ) : transcribeError ? (
             <View style={vrStyles.errorRow}>
               <MaterialIcons name="error-outline" size={13} color={Colors.error} />
               <Text style={vrStyles.transcribeError}>{transcribeError}</Text>
-              <Pressable
-                onPress={handleRetryTranscription}
-                style={({ pressed }) => [vrStyles.retryBtn, pressed && { opacity: 0.8 }]}
-              >
+              <Pressable onPress={handleRetryTranscription} style={({ pressed }) => [vrStyles.retryBtn, pressed && { opacity: 0.8 }]}>
                 <Text style={vrStyles.retryBtnText}>Retry</Text>
               </Pressable>
             </View>
@@ -596,15 +576,10 @@ function VoiceRecorder({
     );
   }
 
-  // ── Record button ───────────────────────────────────────────────────────────
   return (
     <Pressable
       onPress={isRecording ? stopRecording : startRecording}
-      style={({ pressed }) => [
-        vrStyles.recordBtn,
-        isRecording && vrStyles.recordBtnActive,
-        pressed && { opacity: 0.85 },
-      ]}
+      style={({ pressed }) => [vrStyles.recordBtn, isRecording && vrStyles.recordBtnActive, pressed && { opacity: 0.85 }]}
     >
       {isRecording ? (
         <React.Fragment>

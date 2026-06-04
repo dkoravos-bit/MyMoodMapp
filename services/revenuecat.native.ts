@@ -36,7 +36,7 @@ export interface RCSubscriptionStatus {
   entitlementIdentifier: string | null;
 }
 
-const RC_API_KEY_IOS     = 'appl_REPLACE_WITH_YOUR_IOS_PUBLIC_KEY';
+const RC_API_KEY_IOS     = 'appl_HPLikCxgNdIivxFdwGNpJIYvlaS';
 const RC_API_KEY_ANDROID = 'goog_REPLACE_WITH_YOUR_ANDROID_PUBLIC_KEY';
 const PRO_ENT           = 'pro';
 const THERAPIST_PRO_ENT = 'therapist_pro';
@@ -85,15 +85,35 @@ export async function getRevenueCatOfferings(): Promise<{ pro: RCPackage | null;
     const P = getPurchases();
     if (!P) return { pro: null, therapistPro: null };
     const offerings = await P.getOfferings();
-    const current = offerings.current;
-    if (!current) return { pro: null, therapistPro: null };
     let pro: RCPackage | null = null;
     let therapistPro: RCPackage | null = null;
-    for (const pkg of current.availablePackages) {
-      const id = (pkg.identifier + pkg.product.identifier).toLowerCase();
-      if (id.includes('therapist')) { therapistPro = pkg as unknown as RCPackage; }
-      else { pro = pkg as unknown as RCPackage; }
+
+    // Try named offerings first: 'default' for Pro, 'therapist_pro' for Therapist Pro
+    const defaultOffering = offerings.all?.['default'];
+    const therapistOffering = offerings.all?.['therapist_pro'];
+
+    if (defaultOffering?.availablePackages?.length) {
+      pro = defaultOffering.availablePackages[0] as unknown as RCPackage;
     }
+    if (therapistOffering?.availablePackages?.length) {
+      therapistPro = therapistOffering.availablePackages[0] as unknown as RCPackage;
+    }
+
+    // Fallback: scan the current offering's packages by identifier
+    if (!pro || !therapistPro) {
+      const current = offerings.current;
+      if (current?.availablePackages) {
+        for (const pkg of current.availablePackages) {
+          const id = (pkg.identifier + pkg.product.identifier).toLowerCase();
+          if (!therapistPro && id.includes('therapist')) {
+            therapistPro = pkg as unknown as RCPackage;
+          } else if (!pro) {
+            pro = pkg as unknown as RCPackage;
+          }
+        }
+      }
+    }
+
     return { pro, therapistPro };
   } catch (e) {
     console.warn('[RevenueCat] getOfferings error:', e);

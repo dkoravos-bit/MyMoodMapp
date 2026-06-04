@@ -391,25 +391,28 @@ function DomainCard({ domain, expanded, onPress }: { domain: DomainSummary; expa
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [dcStyles.card, expanded && { borderColor: color }, pressed && { opacity: 0.85 }]}
+      style={({ pressed }) => [dcStyles.card, expanded && { borderColor: color + '80' }, pressed && { opacity: 0.85 }]}
     >
-      {/* Mini gauge */}
+      {/* Score bar across top */}
       <View style={dcStyles.gaugeWrap}>
-        <View style={[dcStyles.gaugeBg, {}]}>
-          <View style={[dcStyles.gaugeFill, { height: `${domain.score}%`, backgroundColor: color }]} />
-        </View>
+        <View style={[dcStyles.gaugeFill, { width: `${domain.score}%`, backgroundColor: color }]} />
       </View>
+      {/* Main row: icon+name on left, score on right */}
       <View style={dcStyles.body}>
-        <View style={[dcStyles.iconWrap, { backgroundColor: color + '20' }]}>
-          <MaterialIcons name={domain.icon as any} size={14} color={color} />
+        <View style={dcStyles.leftCol}>
+          <View style={dcStyles.topRow}>
+            <View style={[dcStyles.iconWrap, { backgroundColor: color + '20' }]}>
+              <MaterialIcons name={domain.icon as any} size={18} color={color} />
+            </View>
+            <Text style={dcStyles.domainName} numberOfLines={1}>{domain.domain}</Text>
+          </View>
+          <Text style={dcStyles.headline} numberOfLines={expanded ? undefined : 2}>{domain.headline}</Text>
         </View>
-        <Text style={dcStyles.domainName} numberOfLines={1}>{domain.domain}</Text>
-        <View style={dcStyles.scoreRow}>
+        <View style={dcStyles.rightCol}>
           <Text style={[dcStyles.score, { color }]}>{domain.score}</Text>
           <Text style={dcStyles.scoreDenom}>/100</Text>
+          <MaterialIcons name={expanded ? 'expand-less' : 'expand-more'} size={16} color={Colors.textMuted} style={{ marginTop: 4 }} />
         </View>
-        <Text style={dcStyles.headline} numberOfLines={2}>{domain.headline}</Text>
-        <MaterialIcons name={expanded ? 'expand-less' : 'expand-more'} size={12} color={Colors.textMuted} />
       </View>
 
       {/* Expanded detail */}
@@ -423,24 +426,25 @@ function DomainCard({ domain, expanded, onPress }: { domain: DomainSummary; expa
 }
 const dcStyles = StyleSheet.create({
   card: {
-    width: (SCREEN_WIDTH - Spacing.lg * 2 - Spacing.md) / 2,
-    backgroundColor: Colors.background,
+    width: '100%',
+    backgroundColor: Colors.surfaceElevated,
     borderRadius: Radius.lg,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: Colors.border,
     overflow: 'hidden',
   },
-  gaugeWrap: { height: 5, backgroundColor: Colors.border },
-  gaugeBg: { flex: 1, justifyContent: 'flex-end' },
-  gaugeFill: { width: '100%', borderRadius: 0 },
-  body: { padding: Spacing.md, gap: 5 },
-  iconWrap: { width: 28, height: 28, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
-  domainName: { fontSize: 11, fontWeight: '700', color: Colors.textPrimary, includeFontPadding: false },
-  scoreRow: { flexDirection: 'row', alignItems: 'baseline', gap: 1 },
-  score: { fontSize: Typography.fontSizes.xl, fontWeight: '900', includeFontPadding: false },
-  scoreDenom: { fontSize: 10, color: Colors.textMuted, includeFontPadding: false },
-  headline: { fontSize: 10, color: Colors.textSecondary, lineHeight: 14, includeFontPadding: false },
-  expandedPanel: { borderTopWidth: 1, padding: Spacing.md },
+  gaugeWrap: { height: 4, backgroundColor: Colors.border, width: '100%' },
+  gaugeFill: { height: '100%', borderRadius: 0 },
+  body: { flexDirection: 'row', alignItems: 'center', padding: 14, gap: 12 },
+  leftCol: { flex: 1, gap: 6 },
+  rightCol: { alignItems: 'center', gap: 0, flexShrink: 0 },
+  topRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  iconWrap: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  domainName: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary, includeFontPadding: false, flex: 1 },
+  score: { fontSize: 30, fontWeight: '900', includeFontPadding: false, textAlign: 'center' },
+  scoreDenom: { fontSize: 11, color: Colors.textMuted, includeFontPadding: false, textAlign: 'center' },
+  headline: { fontSize: 12, color: Colors.textSecondary, lineHeight: 17, includeFontPadding: false },
+  expandedPanel: { borderTopWidth: 1, paddingHorizontal: 14, paddingVertical: 12 },
   expandedText: { fontSize: Typography.fontSizes.xs, color: Colors.textSecondary, lineHeight: Typography.fontSizes.xs * 1.65, includeFontPadding: false },
 });
 
@@ -607,7 +611,7 @@ const styles = StyleSheet.create({
   // Domain grid
   domainsCard: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border, gap: Spacing.md },
   domainsSub: { fontSize: Typography.fontSizes.xs, color: Colors.textMuted, includeFontPadding: false },
-  domainsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
+  domainsGrid: { gap: 8 },
   quickReadStrip: { flexDirection: 'row', gap: Spacing.sm },
   quickReadItem: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: Radius.lg, padding: Spacing.sm, borderWidth: 1, flexWrap: 'wrap' },
   quickReadLabel: { fontSize: 10, fontWeight: '700', includeFontPadding: false },
@@ -626,7 +630,7 @@ const styles = StyleSheet.create({
   moonActionTitle: { fontSize: Typography.fontSizes.xs, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5, includeFontPadding: false, marginBottom: 2 },
   moonActionItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   moonActionDot: { width: 5, height: 5, borderRadius: 3, marginTop: 5, flexShrink: 0 },
-  moonActionText: { flex: 1, fontSize: 10, lineHeight: 14, includeFontPadding: false },
+  moonActionText: { flex: 1, fontSize: 13, lineHeight: 19, includeFontPadding: false },
 
   // Forecast
   forecastCard: { backgroundColor: Colors.surfaceElevated, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border, gap: Spacing.md },

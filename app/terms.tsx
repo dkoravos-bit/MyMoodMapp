@@ -191,8 +191,10 @@ export default function TermsScreen() {
           </Section>
 
           <Section num="9" title="Third-Party Services">
-            <Body>The App integrates with third-party services including Apple Health, Google Fit, YouTube (for meditation videos), and weather providers. Your use of those services is governed by their respective terms and privacy policies. We are not responsible for third-party services or their content.</Body>
+            <Body>The App integrates with third-party services including Apple Health, Google Fit, YouTube (for meditation videos), weather providers, and Anthropic's Claude AI. Your use of those services is governed by their respective terms and privacy policies. We are not responsible for third-party services or their content.</Body>
             <Body>YouTube videos embedded in the Guided Meditation section are subject to YouTube's Terms of Service (youtube.com/t/terms) and Google's Privacy Policy.</Body>
+            <Sub>9.1 AI Services (Anthropic Claude)</Sub>
+            <Body>The AI Wellness Reports feature sends your anonymized mood data (scores, tags, and journal text — never your name or email) to Anthropic's Claude API for processing. Before this feature is enabled, the app will request your explicit consent. You may opt out at any time in Settings without losing access to other features. Anthropic does not use your mood data to train AI models. Their privacy policy is available at anthropic.com/privacy.</Body>
           </Section>
 
           <Section num="10" title="Data and Account Deletion">

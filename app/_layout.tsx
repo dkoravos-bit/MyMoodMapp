@@ -1,4 +1,9 @@
 // @ts-nocheck
+// ── CrashShield: MUST be the very first import ──────────────────────────────
+// Patches ExceptionsManager.handleException using require() (non-hoisted) so
+// fatal JS errors NEVER reach RCTExceptionManager's objc_exception_rethrow path.
+// Must come before every other import so it installs before any module can throw.
+import '@/services/crashShield';
 import React from 'react';
 import { ErrorUtils, Platform } from 'react-native';
 // sentryService.ts wraps @sentry/react-native on native;
@@ -6,57 +11,33 @@ import { ErrorUtils, Platform } from 'react-native';
 import Sentry from '@/services/sentryService';
 
 // ── Sentry — initialised as early as possible for maximum crash coverage ──
-// DSN is read from EXPO_PUBLIC_SENTRY_DSN in .env / EAS secrets.
-// If the variable is missing the SDK silently no-ops (safe for local dev).
 try {
   const dsn = process.env.EXPO_PUBLIC_SENTRY_DSN;
   if (dsn) {
     Sentry.init({
       dsn,
-      // Release name must match what EAS uploads source maps under
-      release: 'com.dkoravos.mymoodmapp@1.0.0+13',
-      dist: '13',
-      // Capture 100 % of sessions — tune down in high-traffic production
+      release: 'com.dkoravos.mymoodmapp@1.0.0+19',
+      dist: '19',
       tracesSampleRate: 0.2,
-      // Attach JS stack to all native crashes
       enableNativeCrashHandling: true,
-      // Keep breadcrumbs for context (navigation, console)
       maxBreadcrumbs: 50,
-      // Ignore known non-fatal noise
-      ignoreErrors: [
-        'Network request failed',
-        'Load failed',
-        'AbortError',
-      ],
+      ignoreErrors: ['Network request failed', 'Load failed', 'AbortError'],
     });
   }
 } catch {}
 
-// ── Global JS error handler — catches ALL unhandled exceptions before they reach native ──
-// CRITICAL: Must intercept fatal errors BEFORE they reach RCTFatal (which calls abort()).
-// The handler below reports to Sentry then swallows the error so it never reaches
-// the ObjC rethrow path on com.facebook.react.ExceptionsManagerQueue (SIGABRT).
+// ── Global JS error handler — belt-and-suspenders after Sentry is ready ──────
+// crashShield.native.ts patches ExceptionsManager first; this handler adds Sentry
+// reporting on top. NEVER call the previous handler — that leads to RCTFatal.
 try {
-  ErrorUtils.setGlobalHandler((error: any, isFatal: boolean) => {
-    try {
-      // Report to Sentry before swallowing — captures JS stack + device context
-      Sentry.captureException(error, { tags: { fatal: String(isFatal) } });
-    } catch {}
-    try {
-      if (__DEV__) {
-        console.warn('[GlobalErrorHandler] caught:', isFatal ? 'FATAL' : 'non-fatal', error?.message);
-      }
-    } catch {}
-    // Never rethrow — prevents abort() on native ExceptionsManagerQueue
-  });
+  if (typeof ErrorUtils !== 'undefined') {
+    ErrorUtils.setGlobalHandler((error: any, isFatal: boolean) => {
+      try { Sentry.captureException(error, { tags: { fatal: String(isFatal) } }); } catch {}
+      try { console.log('[GlobalErrorHandler] caught (swallowed):', error?.message); } catch {}
+    });
+  }
 } catch {}
 
-// ── ExceptionsManager patching intentionally removed ────────────────────────
-// The native RCTFatal override is handled by plugins/withRCTFatalOverride.js
-// (injected into the Xcode project at EAS prebuild time). The JS-level patch
-// via require('react-native/Libraries/Core/ExceptionsManager') caused Metro to
-// transitively bundle NativeExceptionsManager.js which fails on web builds
-// (broken relative Platform import at react-native/src/private/specs_DEPRECATED/).
 import { AlertProvider, AuthProvider } from '@/template';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
@@ -75,8 +56,6 @@ import { updateUserProfile } from '@/services/sync';
 import * as Device from 'expo-device';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Notifications, Device, and AsyncStorage are native-only —
-// they are shimmed to safe no-ops on web via metro.config.js
 import {
   configureNotificationHandler,
   loadNotificationSettings,
@@ -111,8 +90,7 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   document.head.appendChild(style);
 }
 
-// ── Global error boundary — catches JS crashes before they reach native ────
-// Wrapped with Sentry.wrap so component-level errors are automatically reported.
+// ── Global error boundary ────────────────────────────────────────────────────
 class ErrorBoundaryInner extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; error: string | null }
@@ -147,26 +125,18 @@ function RootNavigator() {
   const segments = useSegments();
   const { user, loading: authLoading } = useAuth();
   const { onboardingDone, isLoading, moodLog, fitnessData, streak } = useApp();
-  // Use a generic ref type to avoid importing Notifications types on web
   const responseListenerRef = useRef<{ remove: () => void } | null>(null);
 
-  // ── Configure notification handler + Apple Watch category (native only) ───
-  // Deferred into useEffect so it runs AFTER the React tree mounts,
-  // preventing synchronous native calls during bundle evaluation that
-  // could crash the app before the JS engine is fully ready.
   useEffect(() => {
     if (Platform.OS === 'web') return;
     const setupNotifications = async () => {
       try { configureNotificationHandler(); } catch (e: any) { console.warn('[Notifications] configureHandler failed:', e?.message); }
       try { await registerCheckinCategory(); } catch (e: any) { console.warn('[Notifications] registerCategory failed:', e?.message); }
     };
-    // 500 ms delay — ensures the native bridge is fully ready before calling notification APIs
     const t = setTimeout(() => { setupNotifications().catch((e: any) => console.warn('[Notifications] setup error:', e?.message)); }, 500);
     return () => clearTimeout(t);
   }, []);
 
-  // Track if we have ever seen a valid session — prevents flashing the landing
-  // page when the tab regains focus and Supabase momentarily re-validates the session.
   const hadSessionRef = useRef(false);
   const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showNotifPrompt, setShowNotifPrompt] = useState(false);
@@ -178,7 +148,6 @@ function RootNavigator() {
 
   useEffect(() => {
     if (isLoading || authLoading) {
-      // Auth is actively loading — cancel any pending redirect to avoid premature navigation
       if (redirectTimerRef.current) {
         clearTimeout(redirectTimerRef.current);
         redirectTimerRef.current = null;
@@ -190,12 +159,9 @@ function RootNavigator() {
     const inLogin = segments[0] === 'login';
     const inLanding = segments[0] === 'landing';
 
-    // Not logged in
     if (!user) {
-      // If we had an active session, debounce the redirect to give Supabase time
-      // to restore it (handles tab-switch / visibility change re-validation).
       if (hadSessionRef.current) {
-        if (redirectTimerRef.current) return; // already waiting
+        if (redirectTimerRef.current) return;
         redirectTimerRef.current = setTimeout(() => {
           redirectTimerRef.current = null;
           if (Platform.OS === 'web') {
@@ -206,7 +172,6 @@ function RootNavigator() {
         }, 800);
         return;
       }
-      // Never had a session — redirect immediately
       if (Platform.OS === 'web') {
         if (!inLogin && !inLanding) router.replace('/landing');
       } else {
@@ -215,24 +180,20 @@ function RootNavigator() {
       return;
     }
 
-    // User is confirmed — cancel any pending logout redirect
     if (redirectTimerRef.current) {
       clearTimeout(redirectTimerRef.current);
       redirectTimerRef.current = null;
     }
 
-    // Logged in but onboarding not done
     if (!onboardingDone && !inOnboarding) {
       router.replace('/onboarding');
       return;
     }
 
-    // Logged in + onboarding done → main app
     if (onboardingDone && (inOnboarding || inLogin || inLanding)) {
       router.replace('/(tabs)');
     }
 
-    // Show push notification pre-prompt once after onboarding completes
     if (onboardingDone && user && Platform.OS !== 'web' && !notifPromptShownRef.current) {
       notifPromptShownRef.current = true;
       shouldShowNotificationPrePrompt().then(should => {
@@ -241,7 +202,6 @@ function RootNavigator() {
     }
   }, [user, onboardingDone, isLoading, authLoading, segments]);
 
-  // ── Register Expo push token — native only ───────────────────────────────
   useEffect(() => {
     if (!user || Platform.OS === 'web') return;
     const registerToken = async () => {
@@ -263,11 +223,9 @@ function RootNavigator() {
     registerToken();
   }, [user?.id]);
 
-  // ── Auto-populate demo account data (once per calendar day) ─────────────
   useEffect(() => {
     if (!user || isLoading) return;
     const DEMO_EMAIL = 'testaccount@mymoodmapp.com';
-    // Only auto-populate for the review/demo account (never shown in UI)
     if (user.email?.toLowerCase() !== DEMO_EMAIL) return;
     const triggerDemoPopulate = async () => {
       try {
@@ -295,7 +253,6 @@ function RootNavigator() {
     return () => clearTimeout(t);
   }, [user?.id, isLoading]);
 
-  // ── Trigger overdue-log check on app open (max once per hour) ────────────
   useEffect(() => {
     if (!user || isLoading) return;
     const triggerOverdueCheck = async () => {
@@ -327,7 +284,6 @@ function RootNavigator() {
     return () => clearTimeout(t);
   }, [user?.id, isLoading]);
 
-  // ── Weekly recap — native only ───────────────────────────────────────────
   useEffect(() => {
     if (isLoading || Platform.OS === 'web') return;
     const refreshWeeklyRecap = async () => {
@@ -343,7 +299,6 @@ function RootNavigator() {
     refreshWeeklyRecap();
   }, [isLoading]);
 
-  // ── Notification response listener — native only ─────────────────────────
   useEffect(() => {
     if (Platform.OS === 'web') return;
     const setupListener = async () => {
@@ -374,7 +329,6 @@ function RootNavigator() {
     setupListener();
     return () => { responseListenerRef.current?.remove(); };
   }, []);
-
 
   return (
     <>
@@ -427,7 +381,6 @@ export default function RootLayout() {
       </ErrorBoundary>
     );
   } catch (e: any) {
-    // Last-resort fallback — if providers throw during initial render, keep the app alive
     console.error('[RootLayout] render error:', e?.message);
     return (
       <View style={{ flex: 1, backgroundColor: '#0A0A14', alignItems: 'center', justifyContent: 'center' }}>

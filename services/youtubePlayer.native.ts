@@ -1,10 +1,13 @@
+
 // youtubePlayer.native.ts
-// Native YouTube player wrapper — package name is split to avoid static scanner detection.
-// Metro resolves the dynamic require correctly at runtime on native platforms.
+// Static import — Metro must be able to statically analyze the require to include
+// the package in the native bundle. Dynamic concatenated requires (e.g.
+// 'react-native-youtube-' + 'iframe') are not resolved by Metro's static bundler,
+// causing the package to be omitted from the bundle and the component to be null.
 // @ts-nocheck
 
-// Split package name to prevent static text scanning from flagging this file.
-const _yt_pkg = 'react-native-youtube-' + 'iframe';
-let _module: any;
-try { _module = require(_yt_pkg); } catch {}
-export default (_module?.default ?? _module ?? null);
+let _YoutubePlayer: any = null;
+try {
+  _YoutubePlayer = require('react-native-youtube-iframe').default ?? require('react-native-youtube-iframe');
+} catch {}
+export default _YoutubePlayer;

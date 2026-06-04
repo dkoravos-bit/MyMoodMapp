@@ -1,6 +1,6 @@
 // metro.config.js
 // Ensures the web bundle doesn't attempt to compile native-only packages.
-const { getDefaultConfig } = require('expo/metro-config');
+const { getDefaultConfig } = require("expo/metro-config");
 const path = require('path');
 
 const config = getDefaultConfig(__dirname);
@@ -140,7 +140,9 @@ config.resolver = {
       // transitive import chain pulling in ExceptionsManager never breaks the web bundle.
       if (
         moduleName.includes('NativeExceptionsManager') ||
-        moduleName.includes('specs_DEPRECATED/modules/NativeExceptionsManager')
+        moduleName.includes('specs_DEPRECATED/modules/NativeExceptionsManager') ||
+        moduleName === 'react-native/Libraries/Core/ExceptionsManager' ||
+        moduleName.includes('Libraries/Core/ExceptionsManager')
       ) {
         return { filePath: EMPTY_SHIM, type: 'sourceFile' };
       }
@@ -151,6 +153,16 @@ config.resolver = {
     }
     return context.resolveRequest(context, moduleName, platform);
   },
+};
+
+
+// Shim @opentelemetry/api (optional supabase dep)
+const OTEL_SHIM = path.resolve(__dirname, 'shims/native-empty.js');
+const _origResolve = config.resolver.resolveRequest;
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName.startsWith('@opentelemetry')) return { filePath: OTEL_SHIM, type: 'sourceFile' };
+  if (_origResolve) return _origResolve(context, moduleName, platform);
+  return context.resolveRequest(context, moduleName, platform);
 };
 
 module.exports = config;

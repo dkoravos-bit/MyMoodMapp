@@ -83,6 +83,81 @@ export async function removeClient(clientRowId: string): Promise<void> {
     .eq('id', clientRowId);
 }
 
+// ─── Therapist session notes (therapist_client_notes table) ─────────────────
+
+export interface TherapistNote {
+  id: string;
+  therapist_id: string;
+  client_id: string;
+  therapist_client_row_id: string | null;
+  note_text: string;
+  audio_uri: string | null;
+  transcript: string | null;
+  note_date: string; // YYYY-MM-DD
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getClientNotes(therapistId: string, clientId: string): Promise<TherapistNote[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('therapist_client_notes')
+    .select('*')
+    .eq('therapist_id', therapistId)
+    .eq('client_id', clientId)
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+export async function saveClientNote(
+  therapistId: string,
+  clientId: string,
+  therapistClientRowId: string | null,
+  noteText: string,
+  noteDate: string,
+  audioUri?: string | null,
+  transcript?: string | null,
+  existingId?: string | null,
+): Promise<TherapistNote> {
+  const supabase = getSupabaseClient();
+  if (existingId) {
+    const { data, error } = await supabase
+      .from('therapist_client_notes')
+      .update({ note_text: noteText, audio_uri: audioUri ?? null, transcript: transcript ?? null, updated_at: new Date().toISOString() })
+      .eq('id', existingId)
+      .eq('therapist_id', therapistId)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return data;
+  }
+  const { data, error } = await supabase
+    .from('therapist_client_notes')
+    .insert({
+      therapist_id: therapistId,
+      client_id: clientId,
+      therapist_client_row_id: therapistClientRowId,
+      note_text: noteText,
+      audio_uri: audioUri ?? null,
+      transcript: transcript ?? null,
+      note_date: noteDate,
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function deleteClientNote(therapistId: string, noteId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  await supabase
+    .from('therapist_client_notes')
+    .delete()
+    .eq('id', noteId)
+    .eq('therapist_id', therapistId);
+}
+
 export async function updateClientNotes(clientRowId: string, notes: string): Promise<void> {
   const supabase = getSupabaseClient();
   await supabase

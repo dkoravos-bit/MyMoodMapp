@@ -77,31 +77,26 @@ import type { MbPad } from '@/components/feature/MoodBeatGame';
 import PixelArtGame from '@/components/feature/PixelArtGame';
 import { precacheAllSounds } from '@/services/soundCache';
 
-// youtubePlayer.ts wraps react-native-youtube-iframe on native;
-// youtubePlayer.web.ts exports null on web — zero native imports in web bundle.
-import _YoutubePlayerNative from '@/services/youtubePlayer';
+// react-native-webview is used directly for the meditation video player —
+// more reliable than react-native-youtube-iframe which errors on many devices.
+let _WebViewComponent: any = null;
+if (Platform.OS !== 'web') {
+  try { _WebViewComponent = require('react-native-webview').WebView; } catch {}
+}
 
 // ─── Types/constants for disabled stub functions only ────────────────────────────
-// These types are used in the large disabled inline stubs below (\_unusedPlaceholder_noop,
-// \_PixelArtGame_INLINE_DISABLED). They are not used at runtime.
 type MbDrumId = 'kick'|'snare'|'hat_c'|'hat_o'|'clap'|'tom_h'|'tom_l'|'s808'|'crash'|'rim'|'shaker'|'cowbell'|'snap'|'perc'|'bass'|'chord';
 interface PbnRegion { id: number; color: string; label: string; cells: number[]; }
 type GameMode = 'freeform' | 'paint-by-number';
-// useMbAudio stub — real audio is handled inside the imported MoodBeatGame component
 function useMbAudio() { return { triggerSound: (_id: MbDrumId, _vol?: number): void => {} }; }
 
 type Module = 'soundscape' | 'frequency' | 'meditation' | 'games';
 type Intention = 'all' | 'sleep' | 'meditate' | 'focus' | 'heal' | 'energize';
 type MeditationCategory = 'all' | 'sleep' | 'anxiety' | 'mindfulness' | 'focus' | 'frequencies';
 
-/** Free users auto-stop after this many seconds */
-const FREE_LIMIT_SECS = 15 * 60; // 15 minutes
-
-/** Free users get this many lifetime meditation sessions */
+const FREE_LIMIT_SECS = 15 * 60;
 const FREE_MEDITATION_LIMIT = 3;
 const FREE_MEDITATION_COUNT_KEY = 'free_meditation_count';
-
-/** Games that are free for all users */
 const FREE_GAME_IDS = new Set(['breathing-bubble', 'bubble-wrap']);
 
 // ─── Meditation data ──────────────────────────────────────────────────────────
@@ -118,26 +113,21 @@ interface MeditationVideo {
 }
 
 const MEDITATION_VIDEOS: MeditationVideo[] = [
-  // Sleep
   { id: 'mm-sleep-fear', title: 'Release Fear & Worry – Deep Sleep', channel: 'The Mindful Movement', duration: '60 min', youtubeId: '_jc9w7zTbB0', category: 'sleep', emoji: '🌙', description: 'Release all worry and fears with Sara Raymond for a tranquil night sleep.', tags: ['Sleep', 'Deep Rest', 'Fear'] },
   { id: 'med-delta-sleep', title: 'Delta Waves Deep Sleep – Relaxing Music', channel: 'Meditative Mind', duration: '3 hr', youtubeId: 'tybOi4hjZFQ', category: 'sleep', emoji: '🛌', description: 'Deep delta brainwave music designed to guide you into the deepest stages of sleep.', tags: ['Sleep', 'Delta', 'Brainwave'] },
   { id: 'ywa-bedtime', title: 'Yoga For Bedtime – Wind Down', channel: 'Yoga With Adriene', duration: '20 min', youtubeId: 'v7AYKMP6rOE', category: 'sleep', emoji: '🌜', description: 'Gentle yoga sequence to release the body and calm the mind before sleep.', tags: ['Sleep', 'Yoga', 'Relaxation'] },
   { id: 'med-sleep-music', title: 'Sleep Music – Calm Piano & Soft Sounds', channel: 'Meditative Mind', duration: '3 hr', youtubeId: '77ZozI0rw7w', category: 'sleep', emoji: '🎹', description: 'Soothing piano melodies with soft ambient textures to ease you into restful sleep.', tags: ['Sleep', 'Piano', 'Calm'] },
-  // Anxiety & Stress
   { id: 'mm-anxiety', title: 'Guided Meditation for Anxiety & Stress Relief', channel: 'The Mindful Movement', duration: '20 min', youtubeId: 'O-6f5wQXSu8', category: 'anxiety', emoji: '🌿', description: 'Gently release tension and return to a calm, grounded state.', tags: ['Anxiety', 'Stress Relief', 'Calm'] },
   { id: 'mm-overthinking', title: 'Calm an Overactive Mind – Reduce Worry', channel: 'The Mindful Movement', duration: '23 min', youtubeId: 'wi2Q_7C1OfM', category: 'anxiety', emoji: '🌊', description: 'Release anxiety and overthinking — quiet the overactive mind and experience peace in the present moment.', tags: ['Anxiety', 'Overthinking', 'Peace'] },
   { id: 'med-528-anxiety', title: '528 Hz + 174 Hz – Full Body Cell Regeneration', channel: 'Meditative Mind', duration: '3.5 hr', youtubeId: '7xJw6eBEJQs', category: 'anxiety', emoji: '💫', description: 'Healing 528 Hz love frequency combined with 174 Hz to calm the nervous system and ease anxiety.', tags: ['Anxiety', '528 Hz', 'Healing'] },
   { id: 'ywa-for-anxiety', title: 'Yoga For Anxiety & Stress', channel: 'Yoga With Adriene', duration: '20 min', youtubeId: 'hJbRpHZr_d0', category: 'anxiety', emoji: '🕊️', description: 'A gentle yoga practice to move stuck energy and find relief from anxiety.', tags: ['Anxiety', 'Yoga', 'Movement'] },
-  // Mindfulness
   { id: 'jd-morning', title: '15-Min Morning Meditation for Inner Calm', channel: 'Divine Vision', duration: '18 min', youtubeId: 'hiA1HpG00AM', category: 'mindfulness', emoji: '🌅', description: 'Elevate your mindset, increase focus, and set a positive tone for the day ahead.', tags: ['Morning', 'Mindfulness', 'Gratitude'] },
   { id: 'jd-healing', title: '25-Min Self Healing Meditation', channel: 'Divine Vision', duration: '26 min', youtubeId: 'OLgL0ut88-Q', category: 'mindfulness', emoji: '💛', description: 'Align your vibrations with a future reality and attract new opportunities into your life.', tags: ['Healing', 'Mindfulness', 'Self-Love'] },
   { id: 'ywa-morning-yoga', title: 'Energizing Morning Yoga Sequence', channel: 'Yoga With Adriene', duration: '24 min', youtubeId: 'K-Ina_WW4Yc', category: 'mindfulness', emoji: '🧘', description: 'Wake up the mind and body with this energizing morning yoga practice.', tags: ['Morning', 'Movement', 'Energy'] },
   { id: 'mm-self-love', title: 'Self Love Meditation – Heal & Embrace Your Worth', channel: 'The Mindful Movement', duration: '21 min', youtubeId: 'robRtmRLiRM', category: 'mindfulness', emoji: '💚', description: 'Rediscover self-love and soothe your spirit — a journey of self-acceptance and inner peace.', tags: ['Mindfulness', 'Self-Love', 'Kindness'] },
-  // Focus & Energy
   { id: 'gm-focus-clarity', title: '10-Min Meditation for Focus & Clarity', channel: 'Goodful', duration: '10 min', youtubeId: 'vzKryaN44ss', category: 'focus', emoji: '🎯', description: 'A calming guided meditation to sharpen mental clarity, reduce mental chatter, and prime your mind for deep focused work.', tags: ['Focus', 'Clarity', 'Mental Sharpness'] },
   { id: 'med-40hz-focus', title: '40 Hz Gamma Binaural Beats – Super Focus', channel: 'SleepTube', duration: '2 hr', youtubeId: 'Z8ANihFXlgU', category: 'focus', emoji: '⚡', description: 'Gamma brainwave entrainment to synchronize your brain at 40Hz — sharpen focus, memory, and cognitive performance.', tags: ['Focus', 'Gamma', 'Brainwave'] },
   { id: 'ywk-morning-power', title: '15-Min Morning Power Yoga – Wake Up & Energize', channel: 'Yoga with Kassandra', duration: '15 min', youtubeId: 'MHLFy4JsIiM', category: 'focus', emoji: '🌄', description: 'A short power yoga flow to build internal heat, boost energy, and set a strong tone for the day — no props required.', tags: ['Energy', 'Movement', 'Morning'] },
-  // Healing Frequencies
   { id: 'med-963hz', title: '963 Hz – You Are the Universe (Manifest & Awaken)', channel: 'Meditative Mind', duration: '6 hr', youtubeId: 'WI3F9RKSAQY', category: 'frequencies', emoji: '👁️', description: 'The highest solfeggio frequency — 963 Hz activates the pineal gland, elevates consciousness, and reconnects you to pure awareness and manifestation.', tags: ['963 Hz', 'Pineal Gland', 'Solfeggio'] },
   { id: 'med-432hz', title: '432 Hz – Deep Relaxation Healing Music', channel: 'Meditative Mind', duration: '3 hr', youtubeId: 'dJD8FwBrZ3w', category: 'frequencies', emoji: '🎵', description: 'Tuned to the natural frequency of the universe — deeply calming and harmonizing.', tags: ['432 Hz', 'Healing', 'Calm'] },
   { id: 'med-396hz', title: '396 Hz – Let Go of Fear & Guilt', channel: 'Meditative Mind', duration: '9 hr', youtubeId: 'LU_lEl-n5Ec', category: 'frequencies', emoji: '🌀', description: 'Solfeggio frequency 396 Hz to liberate you from fear, guilt, and subconscious negative blocks.', tags: ['396 Hz', 'Solfeggio', 'Release'] },
@@ -181,7 +171,8 @@ const INTENTIONS: { key: Intention; label: string; emoji: string }[] = [
 ];
 
 const TIMER_OPTIONS = [0, 15, 30, 45, 60, 90];
-const PRO_TIMER_OPTIONS = new Set([0, 30, 45, 60, 90]);
+// 0 = "No limit" is FREE — never lock it behind Pro
+const PRO_TIMER_OPTIONS = new Set([30, 45, 60, 90]);
 
 function makeStyles(C: typeof DarkColors, isDark = true) {
   const G = getGlass(isDark);
@@ -224,7 +215,6 @@ function makeStyles(C: typeof DarkColors, isDark = true) {
       borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl,
       paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md,
       paddingBottom: 24, borderTopWidth: 1, borderColor: G.navBorder,
-      // Glass background — will be overridden with backgroundColor in JSX
       ...Shadows.md,
     },
     nowPlayingRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
@@ -306,22 +296,15 @@ function makeStyles(C: typeof DarkColors, isDark = true) {
     },
     moodBtnEmoji: { fontSize: 28 },
     moodBtnLabel: { fontSize: Typography.fontSizes.xs, fontWeight: '700', color: C.textMuted, includeFontPadding: false },
-    sliderTrack: {
-      height: 8, borderRadius: Radius.full,
-      backgroundColor: C.border, overflow: 'hidden',
-    },
+    sliderTrack: { height: 8, borderRadius: Radius.full, backgroundColor: C.border, overflow: 'hidden' },
     sliderFill: { height: '100%', borderRadius: Radius.full },
     sliderThumb: {
       position: 'absolute', top: -14, width: 36, height: 36,
-      borderRadius: 18, borderWidth: 3,
-      alignItems: 'center', justifyContent: 'center',
+      borderRadius: 18, borderWidth: 3, alignItems: 'center', justifyContent: 'center',
       ...Shadows.md,
     },
     sliderLabel: { fontSize: Typography.fontSizes.xs, fontWeight: '700', color: C.textMuted, includeFontPadding: false },
-    confirmBtn: {
-      borderRadius: Radius.xl, paddingVertical: Spacing.md,
-      alignItems: 'center', justifyContent: 'center',
-    },
+    confirmBtn: { borderRadius: Radius.xl, paddingVertical: Spacing.md, alignItems: 'center', justifyContent: 'center' },
     confirmBtnText: { fontSize: Typography.fontSizes.md, fontWeight: '800', color: '#08091A', includeFontPadding: false },
     corrCard: {
       backgroundColor: G.cardBg, borderRadius: Radius.xl,
@@ -516,40 +499,33 @@ export default function SoundLabScreen() {
   const [showMoodCheckin, setShowMoodCheckin] = useState(false);
   const [lastSession, setLastSession] = useState<{ id: string; name: string; category: string } | null>(null);
 
-  // ── Meditation state ───────────────────────────────────────────────────────
   const [meditationCategory, setMeditationCategory] = useState<MeditationCategory>('all');
   const [selectedVideo, setSelectedVideo] = useState<MeditationVideo | null>(null);
   const [meditationMoodCheckin, setMeditationMoodCheckin] = useState<MeditationVideo | null>(null);
-  // Free session count — persisted in AsyncStorage
   const [freeMeditationCount, setFreeMeditationCount] = useState(0);
 
-  // ── Games state ────────────────────────────────────────────────────────────
   const [selectedGame, setSelectedGame] = useState<string | null>(null);
   const [gamesMoodCheckin, setGamesMoodCheckin] = useState<string | null>(null);
   const gamesStartRef = useRef<number>(0);
   const meditationStartRef = useRef<number>(0);
   const [correlations, setCorrelations] = useState<SoundCorrelation[]>([]);
-
   const [moodSliderValue, setMoodSliderValue] = useState(0);
 
   const router = useRouter();
   const { module: initialModule } = useLocalSearchParams<{ module?: string }>();
 
-  // Load free meditation count from AsyncStorage
   useEffect(() => {
     AsyncStorage.getItem(FREE_MEDITATION_COUNT_KEY)
       .then(v => { if (v) setFreeMeditationCount(parseInt(v) || 0); })
       .catch(() => {});
   }, []);
 
-  // Deep-link from dashboard widget
   useEffect(() => {
     if (initialModule && ['soundscape', 'frequency', 'meditation', 'games'].includes(initialModule)) {
       setModule(initialModule as Module);
     }
   }, [initialModule]);
 
-  // Background sound pre-caching (native only)
   useEffect(() => {
     if (Platform.OS === 'web') return;
     const run = async () => {
@@ -559,7 +535,12 @@ export default function SoundLabScreen() {
     return () => clearTimeout(t);
   }, []);
 
-  // Load subscription status
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      configureAudioSession(false).catch(() => {});
+    }
+  }, []);
+
   useEffect(() => {
     let mounted = true;
     checkSubscription().then(s => {
@@ -567,7 +548,7 @@ export default function SoundLabScreen() {
         const pro = s.subscribed || s.tier !== 'free';
         setIsPro(pro);
         setProLoading(false);
-        configureAudioSession(pro).catch(() => {});
+        if (Platform.OS !== 'web') configureAudioSession(pro).catch(() => {});
       }
     }).catch(() => { if (mounted) setProLoading(false); });
     return () => { mounted = false; };
@@ -576,7 +557,16 @@ export default function SoundLabScreen() {
   useEffect(() => {
     if (Platform.OS === 'web') return;
     const sub = AppState.addEventListener('change', nextState => {
-      if (nextState === 'active') configureAudioSession(isPro).catch(() => {});
+      if (nextState === 'active') {
+        configureAudioSession(isPro).catch(() => {});
+      } else if (nextState === 'background' || nextState === 'inactive') {
+        try {
+          const ea = require('expo-audio');
+          if (ea?.AudioSession?.setActive) {
+            ea.AudioSession.setActive(true).catch(() => {});
+          }
+        } catch {}
+      }
     });
     return () => sub.remove();
   }, [isPro]);
@@ -748,7 +738,6 @@ export default function SoundLabScreen() {
           <MaterialIcons name="waves" size={18} color={module === 'frequency' ? '#08091A' : C.textMuted} />
           <Text style={[styles.moduleTabText, module === 'frequency' && styles.moduleTabTextActive]} numberOfLines={1}>Frequency</Text>
         </Pressable>
-        {/* Meditation tab — shows X/3 badge for free users */}
         <Pressable onPress={() => setModule('meditation')} style={[styles.moduleTab, module === 'meditation' && styles.moduleTabActive]}>
           <View style={{ position: 'relative', alignItems: 'center' }}>
             <MaterialIcons name="self-improvement" size={18} color={module === 'meditation' ? '#08091A' : C.textMuted} />
@@ -774,7 +763,6 @@ export default function SoundLabScreen() {
 
       <ScrollView contentContainerStyle={[styles.scroll, { alignItems: 'stretch' }]} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <WebMaxWidth>
-        {/* Mood check-in — slider */}
         {showMoodCheckin ? (
           <MoodSliderCheckin C={C} styles={styles} moodSliderValue={moodSliderValue} setMoodSliderValue={setMoodSliderValue}
             onConfirm={() => handleMoodAfter()}
@@ -782,7 +770,6 @@ export default function SoundLabScreen() {
           />
         ) : null}
 
-        {/* ── SOUNDSCAPE MODULE ─────────────────────────────────────────── */}
         {module === 'soundscape' ? (
           <>
             <View style={{ backgroundColor: C.primary + '12', borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: C.primary + '30', flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg }}>
@@ -882,7 +869,6 @@ export default function SoundLabScreen() {
           </>
         ) : null}
 
-        {/* ── FREQUENCY LAB MODULE ──────────────────────────────────────── */}
         {module === 'frequency' ? (
           <>
             <View style={{ backgroundColor: C.success + '12', borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: C.success + '30', flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg }}>
@@ -976,7 +962,6 @@ export default function SoundLabScreen() {
           </>
         ) : null}
 
-        {/* ── GAMES MODULE ──────────────────────────────────────────────── */}
         {module === 'games' ? (
           <GamesModule
             C={C}
@@ -986,7 +971,6 @@ export default function SoundLabScreen() {
           />
         ) : null}
 
-        {/* Games mood check-in */}
         {gamesMoodCheckin ? (
           <MoodSliderCheckin C={C} styles={styles} moodSliderValue={moodSliderValue} setMoodSliderValue={setMoodSliderValue}
             onConfirm={async () => {
@@ -1001,7 +985,6 @@ export default function SoundLabScreen() {
           />
         ) : null}
 
-        {/* ── MEDITATION MODULE ──────────────────────────────────────────── */}
         {module === 'meditation' ? (
           <MeditationModule
             C={C}
@@ -1011,12 +994,10 @@ export default function SoundLabScreen() {
             isPro={isPro}
             freeMeditationCount={freeMeditationCount}
             onSelectVideo={(video) => {
-              // Gate: free users limited to FREE_MEDITATION_LIMIT sessions
               if (!isPro && freeMeditationCount >= FREE_MEDITATION_LIMIT) {
                 setShowProModal(true);
                 return;
               }
-              // Increment & persist free session count
               if (!isPro) {
                 const next = freeMeditationCount + 1;
                 setFreeMeditationCount(next);
@@ -1028,7 +1009,6 @@ export default function SoundLabScreen() {
           />
         ) : null}
 
-        {/* Meditation mood check-in overlay */}
         {meditationMoodCheckin ? (
           <MoodSliderCheckin C={C} styles={styles} moodSliderValue={moodSliderValue} setMoodSliderValue={setMoodSliderValue}
             onConfirm={async () => {
@@ -1043,7 +1023,6 @@ export default function SoundLabScreen() {
           />
         ) : null}
 
-        {/* Sound-Mood correlations */}
         {correlations.length > 0 && !showMoodCheckin ? (
           <>
             <Text style={[styles.sectionLabel, { marginTop: Spacing.xl }]}>Your Sound-Mood Map</Text>
@@ -1062,7 +1041,6 @@ export default function SoundLabScreen() {
         </WebMaxWidth>
       </ScrollView>
 
-      {/* Pro Upgrade Modal */}
       {showProModal ? (
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', padding: Spacing.xl }}>
           <View style={{ backgroundColor: isDark ? 'rgba(18,16,36,0.97)' : 'rgba(245,244,255,0.98)', borderRadius: Radius.xl, padding: Spacing.xl, borderWidth: 1.5, borderColor: C.primary + '60', width: '100%', gap: Spacing.lg,
@@ -1104,7 +1082,6 @@ export default function SoundLabScreen() {
         </View>
       ) : null}
 
-      {/* Game Modal */}
       {selectedGame ? (
         <GameModal gameId={selectedGame} C={C} onClose={() => {
           const elapsed = Math.floor((Date.now() - gamesStartRef.current) / 1000);
@@ -1113,7 +1090,6 @@ export default function SoundLabScreen() {
         }} />
       ) : null}
 
-      {/* Meditation Video Modal */}
       {selectedVideo ? (
         <MeditationVideoModal video={selectedVideo} C={C} onClose={() => {
           setSelectedVideo(null);
@@ -1122,7 +1098,6 @@ export default function SoundLabScreen() {
         }} />
       ) : null}
 
-      {/* Now Playing bar */}
       {(playingSound || playingFreq || sessionActive) ? (
         <View style={[styles.nowPlayingBar, { backgroundColor: G.navBg }]}>
           <View style={styles.nowPlayingRow}>
@@ -1168,15 +1143,8 @@ export default function SoundLabScreen() {
 // =============================================================================
 
 interface StressGame {
-  id: string;
-  title: string;
-  emoji: string;
-  category: string;
-  duration: string;
-  description: string;
-  tags: string[];
-  color: string;
-  mechanism: string;
+  id: string; title: string; emoji: string; category: string; duration: string;
+  description: string; tags: string[]; color: string; mechanism: string;
 }
 
 const STRESS_GAMES: StressGame[] = [
@@ -1198,17 +1166,14 @@ const GAME_CATEGORIES = [
 ];
 
 function GamesModule({ C, isPro, onSelectGame, onShowProModal }: {
-  C: typeof DarkColors;
-  isPro: boolean;
-  onSelectGame: (id: string) => void;
-  onShowProModal: () => void;
+  C: typeof DarkColors; isPro: boolean;
+  onSelectGame: (id: string) => void; onShowProModal: () => void;
 }) {
   const [catFilter, setCatFilter] = useState<string>('all');
   const filtered = STRESS_GAMES.filter(g => catFilter === 'all' || g.category === catFilter);
 
   return (
     <View style={{ gap: Spacing.lg }}>
-      {/* Header banner */}
       <View style={{ backgroundColor: '#F472B6' + '12', borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: '#F472B6' + '30', flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
         <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: '#F472B6' + '25', alignItems: 'center', justifyContent: 'center' }}>
           <MaterialIcons name="games" size={24} color="#F472B6" />
@@ -1221,7 +1186,6 @@ function GamesModule({ C, isPro, onSelectGame, onShowProModal }: {
         </View>
       </View>
 
-      {/* Free tier notice */}
       {!isPro ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: '#F5A623' + '12', borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: '#F5A623' + '35' }}>
           <MaterialIcons name="lock-open" size={14} color="#F5A623" />
@@ -1232,14 +1196,12 @@ function GamesModule({ C, isPro, onSelectGame, onShowProModal }: {
         </View>
       ) : null}
 
-      {/* Science note */}
       <View style={{ backgroundColor: C.secondary + '10', borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: C.secondary + '30' }}>
         <Text style={{ fontSize: Typography.fontSizes.xs, color: C.secondary, lineHeight: 16, includeFontPadding: false } as any}>
           💡 These games work by displacing anxious rumination from the default mode network and activating the parasympathetic nervous system. Even 60 seconds is clinically effective.
         </Text>
       </View>
 
-      {/* Category filter */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.sm, paddingHorizontal: 2, paddingVertical: 4 }}>
         {GAME_CATEGORIES.map(cat => {
           const active = catFilter === cat.key;
@@ -1252,13 +1214,11 @@ function GamesModule({ C, isPro, onSelectGame, onShowProModal }: {
         })}
       </ScrollView>
 
-      {/* Game cards */}
       <View style={{ gap: Spacing.md }}>
         {filtered.map(game => {
           const isLocked = !isPro && !FREE_GAME_IDS.has(game.id);
           return (
-            <Pressable
-              key={game.id}
+            <Pressable key={game.id}
               onPress={() => { if (isLocked) { onShowProModal(); return; } onSelectGame(game.id); }}
               style={({ pressed }) => [{ backgroundColor: C.surfaceElevated, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1.5, borderColor: C.border, gap: Spacing.md, opacity: isLocked ? 0.65 : 1 }, pressed && { opacity: isLocked ? 0.45 : 0.85, borderColor: game.color + '60' }]}
             >
@@ -1269,7 +1229,6 @@ function GamesModule({ C, isPro, onSelectGame, onShowProModal }: {
                 <View style={{ flex: 1, gap: 3 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexWrap: 'wrap' }}>
                     <Text style={{ fontSize: Typography.fontSizes.md, fontWeight: '800', color: C.textPrimary, includeFontPadding: false } as any}>{game.title}</Text>
-                    {/* Free / Pro badge */}
                     {!isPro ? (
                       FREE_GAME_IDS.has(game.id) ? (
                         <View style={{ backgroundColor: '#4ADE80' + '20', borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: '#4ADE80' + '40' }}>
@@ -1323,7 +1282,7 @@ function GamesModule({ C, isPro, onSelectGame, onShowProModal }: {
 }
 
 // =============================================================================
-// GAME MODAL — full-screen wrapper with minimal chrome
+// GAME MODAL
 // =============================================================================
 function GameModal({ gameId, C, onClose }: { gameId: string; C: typeof DarkColors; onClose: () => void }) {
   const game = STRESS_GAMES.find(g => g.id === gameId);
@@ -1385,7 +1344,6 @@ function BreathingBubbleGame({ C }: { C: typeof DarkColors }) {
   const rotLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const glowLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const lastPhaseRef = useRef(-1);
-
   const { width: SW, height: SH } = Dimensions.get('window');
   const bubbleMax = Math.min(SW * 0.62, SH * 0.38, 280);
 
@@ -1400,10 +1358,7 @@ function BreathingBubbleGame({ C }: { C: typeof DarkColors }) {
       const targetScale = idx === 0 ? 1.0 : idx === 1 ? 1.0 : 0.35;
       const startScale  = idx === 0 ? 0.35 : idx === 1 ? 1.0 : 1.0;
       scaleAnim.setValue(startScale);
-      if (lastPhaseRef.current !== idx) {
-        lastPhaseRef.current = idx;
-        // Sound intentionally silent — breathing game is silent
-      }
+      if (lastPhaseRef.current !== idx) { lastPhaseRef.current = idx; }
       Animated.timing(scaleAnim, { toValue: targetScale, duration: phase.duration, easing: Easing.inOut(Easing.ease), useNativeDriver: true }).start(({ finished }) => {
         if (!finished || !runningRef.current) return;
         const next = (idx + 1) % phases.length;
@@ -1425,10 +1380,7 @@ function BreathingBubbleGame({ C }: { C: typeof DarkColors }) {
   };
 
   const start = () => {
-    runningRef.current = true;
-    setRunning(true);
-    setCycles(0);
-    cyclesRef.current = 0;
+    runningRef.current = true; setRunning(true); setCycles(0); cyclesRef.current = 0;
     rotLoopRef.current = Animated.loop(Animated.timing(rotateAnim, { toValue: 1, duration: 20000, easing: Easing.linear, useNativeDriver: true }));
     rotLoopRef.current.start();
     glowLoopRef.current = Animated.loop(Animated.sequence([
@@ -1440,11 +1392,8 @@ function BreathingBubbleGame({ C }: { C: typeof DarkColors }) {
   };
 
   const stop = () => {
-    runningRef.current = false;
-    lastPhaseRef.current = -1;
-    setRunning(false);
-    rotLoopRef.current?.stop();
-    glowLoopRef.current?.stop();
+    runningRef.current = false; lastPhaseRef.current = -1; setRunning(false);
+    rotLoopRef.current?.stop(); glowLoopRef.current?.stop();
     scaleAnim.stopAnimation(); scaleAnim.setValue(0.35);
     rotateAnim.setValue(0); glowAnim.setValue(0.4);
     setPhaseIdx(0); setProgress(0); setCountdown(0);
@@ -1892,1278 +1841,15 @@ function DotMandalaGame({ C }: { C: typeof DarkColors }) {
 }
 
 // =============================================================================
-// GAME 6 — PIXEL ART — imported from components/feature/PixelArtGame.tsx
+// STUBS
 // =============================================================================
-// (PixelArtGame component is imported at the top of this file)
-
 function _pixelArtStub_noop(): void {}
-
-// PixelArtGame is fully defined in components/feature/PixelArtGame.tsx
-// The stub below is intentionally unreachable — it satisfies TypeScript only.
-function _extractColorRegions_stub_DISABLED_NOOP(
-  imageUri: string,
-  cols: number,
-  rows: number,
-): Promise<{ palette: string[]; regions: PbnRegion[]; pixelColors: string[] }> {
-  return new Promise((resolve) => {
-    try {
-      if (typeof document === 'undefined') {
-        // Native: return a simple pre-defined pattern
-        const fallbackPalette = [
-          '#FF6B6B', '#F5A623', '#4ECDC4', '#7C83FF',
-          '#4ADE80', '#F472B6', '#38BDF8', '#A78BFA',
-        ];
-        const pixelColors = Array.from({ length: cols * rows }, (_, i) => {
-          return fallbackPalette[Math.floor(Math.random() * 4)];
-        });
-        const regions: PbnRegion[] = fallbackPalette.slice(0, 6).map((color, id) => ({
-          id,
-          color,
-          label: String(id + 1),
-          cells: pixelColors.reduce<number[]>((acc, c, idx) => { if (c === color) acc.push(idx); return acc; }, []),
-        }));
-        resolve({ palette: fallbackPalette.slice(0, 6), regions, pixelColors });
-        return;
-      }
-
-      const img = new window.Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = cols;
-          canvas.height = rows;
-          const ctx = canvas.getContext('2d')!;
-          ctx.drawImage(img, 0, 0, cols, rows);
-          const data = ctx.getImageData(0, 0, cols, rows).data;
-
-          // Sample every pixel color
-          const rawColors: string[] = [];
-          for (let i = 0; i < cols * rows; i++) {
-            const r = data[i * 4];
-            const g = data[i * 4 + 1];
-            const b = data[i * 4 + 2];
-            // Quantize to reduce colors: snap to nearest multiple of 32
-            const rq = Math.round(r / 32) * 32;
-            const gq = Math.round(g / 32) * 32;
-            const bq = Math.round(b / 32) * 32;
-            rawColors.push(`rgb(${rq},${gq},${bq})`);
-          }
-
-          // Find dominant colors (top N by frequency)
-          const freq: Record<string, number> = {};
-          rawColors.forEach(c => { freq[c] = (freq[c] ?? 0) + 1; });
-          const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 8);
-          const paletteRgb = sorted.map(([c]) => c);
-
-          // Convert rgb strings to hex
-          const rgbToHex = (rgb: string) => {
-            const m = rgb.match(/\d+/g);
-            if (!m) return '#FFFFFF';
-            return '#' + [m[0], m[1], m[2]].map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
-          };
-          const palette = paletteRgb.map(rgbToHex);
-
-          // Map every pixel to the nearest palette color
-          const hexToRgb = (hex: string) => {
-            const r = parseInt(hex.slice(1, 3), 16);
-            const g = parseInt(hex.slice(3, 5), 16);
-            const b = parseInt(hex.slice(5, 7), 16);
-            return { r, g, b };
-          };
-          const palRgb = palette.map(hexToRgb);
-
-          const pixelColors = rawColors.map(rawC => {
-            const m = rawC.match(/\d+/g)!;
-            const pr = parseInt(m[0]); const pg = parseInt(m[1]); const pb = parseInt(m[2]);
-            let bestIdx = 0; let bestDist = Infinity;
-            palRgb.forEach(({ r, g, b }, idx) => {
-              const dist = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
-              if (dist < bestDist) { bestDist = dist; bestIdx = idx; }
-            });
-            return palette[bestIdx];
-          });
-
-          // Build regions
-          const regions: PbnRegion[] = palette.map((color, id) => ({
-            id,
-            color,
-            label: String(id + 1),
-            cells: pixelColors.reduce<number[]>((acc, c, idx) => { if (c === color) acc.push(idx); return acc; }, []),
-          })).filter(r => r.cells.length > 0);
-
-          resolve({ palette, regions, pixelColors });
-        } catch {
-          resolve({ palette: [], regions: [], pixelColors: [] });
-        }
-      };
-      img.onerror = () => resolve({ palette: [], regions: [], pixelColors: [] });
-      img.src = imageUri;
-    } catch {
-      resolve({ palette: [], regions: [], pixelColors: [] });
-    }
-  });
-}
-
-function _PixelArtGame_INLINE_DISABLED({ C }: { C: typeof DarkColors }) {
-  const { width: SW, height: SH } = Dimensions.get('window');
-
-  // ── Mode ──────────────────────────────────────────────────────────────────
-  const [mode, setMode] = useState<GameMode>('freeform');
-
-  // ── Freeform state ────────────────────────────────────────────────────────
-  const COLS = 24; const ROWS = 24;
-  const FREE_PALETTE = [
-    '#FF6B6B', '#FF8E53', '#F5A623', '#FFD93D', '#95E06C', '#4ECDC4',
-    '#38BDF8', '#7C83FF', '#A78BFA', '#E879F9', '#F472B6', '#FFFFFF',
-    '#94A3B8', '#475569', '#1E293B', '#0A0B1E', '#FF0000', '#00FF88', '#0088FF', '#FF00CC',
-  ];
-  const [freeCells, setFreeCells] = useState<(string | null)[]>(() => Array(COLS * ROWS).fill(null));
-  const [activeColor, setActiveColor] = useState(FREE_PALETTE[6]);
-  const [erasing, setErasing] = useState(false);
-  const [freeFilled, setFreeFilled] = useState(0);
-
-  // ── Paint-by-Number state ─────────────────────────────────────────────────
-  const [pbnSearch, setPbnSearch] = useState('');
-  const [pbnLoading, setPbnLoading] = useState(false);
-  const [pbnError, setPbnError] = useState<string | null>(null);
-  const [pbnImageUri, setPbnImageUri] = useState<string | null>(null);
-  const [pbnPalette, setPbnPalette] = useState<string[]>([]);
-  const [pbnRegions, setPbnRegions] = useState<PbnRegion[]>([]);
-  const [pbnPixelColors, setPbnPixelColors] = useState<string[]>([]);
-  const [pbnUserColors, setPbnUserColors] = useState<(string | null)[]>([]);
-  const [pbnActiveColor, setPbnActiveColor] = useState<string | null>(null);
-  const [pbnCols, setPbnCols] = useState(32);
-  const [pbnRows, setPbnRows] = useState(32);
-  const [pbnProcessing, setPbnProcessing] = useState(false);
-  const [showNumbers, setShowNumbers] = useState(true);
-  const [pbnProgress, setPbnProgress] = useState(0);
-  const [suggestions] = useState([
-    '🌺 Cherry blossom', '🦋 Butterfly', '🌊 Ocean wave', '🦁 Lion',
-    '🌙 Moon cat', '🏔️ Mountain', '🐠 Tropical fish', '🌸 Rose',
-    '🦜 Parrot', '🌈 Rainbow', '🐉 Dragon', '🦊 Fox',
-  ]);
-
-  // ── Shared canvas refs ────────────────────────────────────────────────────
-  const freeActiveColorRef = useRef(activeColor);
-  const freeErasingRef = useRef(erasing);
-  freeActiveColorRef.current = activeColor;
-  freeErasingRef.current = erasing;
-  const lastPaintedRef = useRef(-1);
-  const freeCellsBufRef = useRef<(string | null)[]>(Array(COLS * ROWS).fill(null));
-  const freeDirtyRef = useRef(false);
-  const freeFilledRef = useRef(0);
-  const pbnUserColorsRef = useRef<(string | null)[]>([]);
-  const pbnActiveColorRef = useRef<string | null>(null);
-  const pbnDirtyRef = useRef(false);
-  const pbnColsRef = useRef(32);
-  const pbnRowsRef = useRef(32);
-  const pbnPixelColorsRef = useRef<string[]>([]);
-
-  // Sync refs
-  useEffect(() => { pbnActiveColorRef.current = pbnActiveColor; }, [pbnActiveColor]);
-  useEffect(() => { pbnUserColorsRef.current = pbnUserColors; }, [pbnUserColors]);
-  useEffect(() => { pbnColsRef.current = pbnCols; pbnRowsRef.current = pbnRows; }, [pbnCols, pbnRows]);
-  useEffect(() => { pbnPixelColorsRef.current = pbnPixelColors; }, [pbnPixelColors]);
-
-  // ── Freeform dirty poll ───────────────────────────────────────────────────
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (!freeDirtyRef.current) return;
-      freeDirtyRef.current = false;
-      setFreeCells([...freeCellsBufRef.current]);
-      setFreeFilled(freeFilledRef.current);
-    }, 60);
-    return () => clearInterval(id);
-  }, []);
-
-  // ── PBN dirty poll ────────────────────────────────────────────────────────
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (!pbnDirtyRef.current) return;
-      pbnDirtyRef.current = false;
-      const filled = pbnUserColorsRef.current.filter(c => c !== null).length;
-      const total = pbnColsRef.current * pbnRowsRef.current;
-      setPbnProgress(total > 0 ? Math.round((filled / total) * 100) : 0);
-      setPbnUserColors([...pbnUserColorsRef.current]);
-    }, 80);
-    return () => clearInterval(id);
-  }, []);
-
-  // ── Canvas dimensions ─────────────────────────────────────────────────────
-  const TOOLBAR_H = 92;
-  const HEADER_H = 100;
-  const TOPBAR_H = 48;
-  // Available canvas area
-  const availH = SH - HEADER_H - TOPBAR_H - TOOLBAR_H - 8;
-
-  // Freeform — use RECTANGULAR cells that fill the entire available area
-  const freeCellW = Math.max(1, Math.floor(SW / COLS));
-  const freeCellH = Math.max(1, Math.floor(availH / ROWS));
-  const freeCellSize = freeCellW; // alias for PanResponder dependency array
-  // No forced square — each cell can be slightly rectangular to fill screen
-  const freeBoardW = freeCellW * COLS;
-  const freeBoardH = freeCellH * ROWS;
-
-  // PBN — use whole available area
-  const pbnCellSize = Math.max(1, Math.min(
-    Math.floor(SW / pbnCols),
-    Math.floor(availH / pbnRows)
-  ));
-  const pbnBoardW = pbnCellSize * pbnCols;
-  const pbnBoardH = pbnCellSize * pbnRows;
-
-  const freeCanvasRef = useRef<View>(null);
-  const pbnCanvasRef = useRef<View>(null);
-  const freeOrigin = useRef({ x: 0, y: 0 });
-  const pbnOrigin = useRef({ x: 0, y: 0 });
-
-  // ── Free paint ────────────────────────────────────────────────────────────
-  const freePaint = (i: number) => {
-    if (i < 0 || i >= COLS * ROWS || i === lastPaintedRef.current) return;
-    lastPaintedRef.current = i;
-    playPixelPaint();
-    const buf = freeCellsBufRef.current;
-    const wasEmpty = buf[i] === null;
-    const newVal = freeErasingRef.current ? null : freeActiveColorRef.current;
-    if (buf[i] === newVal) return;
-    buf[i] = newVal;
-    if (!freeErasingRef.current && wasEmpty) freeFilledRef.current += 1;
-    if (freeErasingRef.current && !wasEmpty) freeFilledRef.current = Math.max(0, freeFilledRef.current - 1);
-    freeDirtyRef.current = true;
-  };
-
-  const freeHitTest = (pageX: number, pageY: number) => {
-    const lx = pageX - freeOrigin.current.x;
-    const ly = pageY - freeOrigin.current.y;
-    // Use separate cellW and cellH for rectangular cells
-    const col = Math.floor(lx / freeCellW);
-    const row = Math.floor(ly / freeCellH);
-    if (col >= 0 && col < COLS && row >= 0 && row < ROWS) freePaint(row * COLS + col);
-  };
-
-  const drawPan = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onStartShouldSetPanResponderCapture: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponderCapture: () => true,
-    onPanResponderGrant: (e) => {
-      lastPaintedRef.current = -1;
-      freeCanvasRef.current?.measure((_fx, _fy, _w, _h, px, py) => { freeOrigin.current = { x: px, y: py }; });
-      freeHitTest(e.nativeEvent.pageX, e.nativeEvent.pageY);
-    },
-    onPanResponderMove: (e) => { freeHitTest(e.nativeEvent.pageX, e.nativeEvent.pageY); },
-    onPanResponderRelease: () => { lastPaintedRef.current = -1; },
-    onPanResponderTerminate: () => { lastPaintedRef.current = -1; },
-  }), [freeCellSize]);
-
-  const clearFree = () => {
-    freeCellsBufRef.current = Array(COLS * ROWS).fill(null);
-    freeFilledRef.current = 0;
-    freeDirtyRef.current = false;
-    setFreeCells(Array(COLS * ROWS).fill(null));
-    setFreeFilled(0);
-  };
-
-  // ── PBN paint ─────────────────────────────────────────────────────────────
-  const pbnHitTest = (pageX: number, pageY: number) => {
-    const lx = pageX - pbnOrigin.current.x;
-    const ly = pageY - pbnOrigin.current.y;
-    const col = Math.floor(lx / pbnCellSize);
-    const row = Math.floor(ly / pbnCellSize);
-    const COLS_N = pbnColsRef.current;
-    const ROWS_N = pbnRowsRef.current;
-    if (col < 0 || col >= COLS_N || row < 0 || row >= ROWS_N) return;
-    const idx = row * COLS_N + col;
-    const activeC = pbnActiveColorRef.current;
-    if (!activeC) return;
-    const buf = pbnUserColorsRef.current;
-    if (buf[idx] === activeC) return;
-    buf[idx] = activeC;
-    playPixelPaint();
-    pbnDirtyRef.current = true;
-  };
-
-  const pbnPan = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onStartShouldSetPanResponderCapture: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponderCapture: () => true,
-    onPanResponderGrant: (e) => {
-      pbnCanvasRef.current?.measure((_fx, _fy, _w, _h, px, py) => { pbnOrigin.current = { x: px, y: py }; });
-      pbnHitTest(e.nativeEvent.pageX, e.nativeEvent.pageY);
-    },
-    onPanResponderMove: (e) => { pbnHitTest(e.nativeEvent.pageX, e.nativeEvent.pageY); },
-    onPanResponderRelease: () => {},
-  }), [pbnCellSize, pbnCols, pbnRows]);
-
-  // ── Generate PBN image ────────────────────────────────────────────────────
-  // The Edge Function now returns pre-computed palette + pixelMap (server-side
-  // color extraction) so we never need CORS canvas reads on the client.
-  const handleSearch = async (subject: string) => {
-    if (!subject.trim()) return;
-    setPbnLoading(true);
-    setPbnError(null);
-    setPbnImageUri(null);
-    setPbnPalette([]);
-    setPbnRegions([]);
-    setPbnUserColors([]);
-    pbnUserColorsRef.current = [];
-    try {
-      const supabase = getSupabaseClient();
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token ?? '';
-      const supabaseUrl = (supabase as any).supabaseUrl as string ?? '';
-      const fnUrl = `${supabaseUrl}/functions/v1/generate-paint-image`;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
-      let response: Response;
-      try {
-        response = await fetch(fnUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ subject: subject.replace(/^[\u{1F000}-\u{1FFFF}\u2600-\u26FF\u2700-\u27BF]\s*/u, '').trim() || subject }),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timeoutId);
-      }
-
-      if (!response.ok) {
-        const errText = await response.text().catch(() => '');
-        throw new Error(`Generation failed (${response.status})${errText ? ': ' + errText.slice(0, 120) : ''}`);
-      }
-      const data = await response.json();
-      if (!data.imageBase64) throw new Error('No image returned from server');
-
-      // Build display image URI
-      const imageUri = `data:${data.contentType ?? 'image/jpeg'};base64,${data.imageBase64}`;
-      setPbnImageUri(imageUri);
-
-      // Use server-side palette + pixelMap (no CORS canvas needed)
-      const cols: number = data.cols ?? 32;
-      const rows: number = data.rows ?? 32;
-      const palette: string[] = data.palette ?? [];
-      const pixelMap: number[] = data.pixelMap ?? [];
-
-      if (palette.length === 0) throw new Error('Server returned empty palette — please try again');
-      if (pixelMap.length !== cols * rows) throw new Error('Pixel data mismatch — please try again');
-
-      // Convert pixelMap (palette indices) to per-cell hex color strings
-      const pixelColors: string[] = pixelMap.map((idx: number) => palette[idx] ?? palette[0]);
-
-      // Build region lookup (used for fill-bucket border color display)
-      const regions: PbnRegion[] = palette.map((color, id) => ({
-        id,
-        color,
-        label: String(id + 1),
-        cells: pixelColors.reduce<number[]>((acc, c, idx) => { if (c === color) acc.push(idx); return acc; }, []),
-      }));
-
-      setPbnCols(cols);
-      setPbnRows(rows);
-      pbnColsRef.current = cols;
-      pbnRowsRef.current = rows;
-      setPbnPalette(palette);
-      setPbnRegions(regions);
-      setPbnPixelColors(pixelColors);
-      pbnPixelColorsRef.current = pixelColors;
-
-      const emptyColors = new Array(cols * rows).fill(null);
-      setPbnUserColors(emptyColors);
-      pbnUserColorsRef.current = emptyColors;
-      setPbnActiveColor(palette[0]);
-      pbnActiveColorRef.current = palette[0];
-      setPbnProgress(0);
-
-    } catch (e: any) {
-      setPbnError(e.message ?? 'Could not generate image. Try again.');
-    } finally {
-      setPbnLoading(false);
-      setPbnProcessing(false);
-    }
-  };
-
-  // ── Fill bucket: fill all adjacent cells of same expected color ───────────
-  const pbnFillBucket = (startIdx: number) => {
-    const activeC = pbnActiveColorRef.current;
-    if (!activeC) return;
-    const cols = pbnColsRef.current;
-    const rows = pbnRowsRef.current;
-    const pixColors = pbnPixelColorsRef.current;
-    const targetColor = pixColors[startIdx];
-    if (!targetColor) return;
-    const buf = [...pbnUserColorsRef.current];
-    const visited = new Set<number>();
-    const queue = [startIdx];
-    while (queue.length > 0) {
-      const idx = queue.shift()!;
-      if (visited.has(idx)) continue;
-      visited.add(idx);
-      if (pixColors[idx] !== targetColor) continue;
-      buf[idx] = activeC;
-      const r = Math.floor(idx / cols);
-      const c = idx % cols;
-      if (r > 0) queue.push((r - 1) * cols + c);
-      if (r < rows - 1) queue.push((r + 1) * cols + c);
-      if (c > 0) queue.push(r * cols + (c - 1));
-      if (c < cols - 1) queue.push(r * cols + (c + 1));
-    }
-    pbnUserColorsRef.current = buf;
-    const filled = buf.filter(x => x !== null).length;
-    setPbnProgress(Math.round((filled / (cols * rows)) * 100));
-    setPbnUserColors([...buf]);
-    playPixelPaint();
-  };
-
-  const clearPbn = () => {
-    const empty = new Array(pbnCols * pbnRows).fill(null);
-    setPbnUserColors(empty);
-    pbnUserColorsRef.current = empty;
-    setPbnProgress(0);
-  };
-
-  // ── Get color number label ────────────────────────────────────────────────
-  const getColorNum = (hexColor: string) => {
-    const idx = pbnPalette.indexOf(hexColor);
-    return idx >= 0 ? String(idx + 1) : '?';
-  };
-
-  const freePct = Math.round((freeFilled / (COLS * ROWS)) * 100);
-
-  return (
-    <View style={{ flex: 1, backgroundColor: '#08091A', paddingTop: HEADER_H }}>
-      {/* Mode toggle */}
-      <View style={{ height: TOPBAR_H, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.07)' }}>
-        <Pressable
-          onPress={() => setMode('freeform')}
-          style={({ pressed }) => [{
-            flex: 1, alignItems: 'center', justifyContent: 'center', height: 34,
-            borderRadius: Radius.lg, borderWidth: 1.5,
-            borderColor: mode === 'freeform' ? '#F472B6' : 'rgba(255,255,255,0.1)',
-            backgroundColor: mode === 'freeform' ? '#F472B620' : 'transparent',
-          }, pressed && { opacity: 0.7 }]}
-        >
-          <Text style={{ fontSize: 13, fontWeight: '700', color: mode === 'freeform' ? '#F472B6' : 'rgba(255,255,255,0.4)', includeFontPadding: false } as any}>🎨 Free Paint</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setMode('paint-by-number')}
-          style={({ pressed }) => [{
-            flex: 1, alignItems: 'center', justifyContent: 'center', height: 34,
-            borderRadius: Radius.lg, borderWidth: 1.5,
-            borderColor: mode === 'paint-by-number' ? '#4ECDC4' : 'rgba(255,255,255,0.1)',
-            backgroundColor: mode === 'paint-by-number' ? '#4ECDC420' : 'transparent',
-          }, pressed && { opacity: 0.7 }]}
-        >
-          <Text style={{ fontSize: 13, fontWeight: '700', color: mode === 'paint-by-number' ? '#4ECDC4' : 'rgba(255,255,255,0.4)', includeFontPadding: false } as any}>🔢 Paint by Number</Text>
-        </Pressable>
-      </View>
-
-      {/* ─── FREEFORM MODE ─────────────────────────────────────────────────── */}
-      {mode === 'freeform' ? (
-        <>
-          {/* Stats bar */}
-          <View style={{ height: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14 }}>
-            <Text style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', includeFontPadding: false } as any}>{freeFilled} / {COLS * ROWS} pixels · {freePct}%</Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <Pressable
-                onPress={() => { setErasing(!erasing); }}
-                style={({ pressed }) => [{
-                  flexDirection: 'row', alignItems: 'center', gap: 4,
-                  paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.full,
-                  borderWidth: 1.5, borderColor: erasing ? '#FF6B6B' : 'rgba(255,255,255,0.12)',
-                  backgroundColor: erasing ? '#FF6B6B20' : 'transparent',
-                }, pressed && { opacity: 0.7 }]}
-              >
-                <MaterialIcons name="auto-fix-high" size={12} color={erasing ? '#FF6B6B' : 'rgba(255,255,255,0.4)'} />
-                <Text style={{ fontSize: 11, fontWeight: '700', color: erasing ? '#FF6B6B' : 'rgba(255,255,255,0.4)', includeFontPadding: false } as any}>{erasing ? 'Erasing' : 'Erase'}</Text>
-              </Pressable>
-              <Pressable onPress={clearFree} style={({ pressed }) => [{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }, pressed && { opacity: 0.6 }]}>
-                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontWeight: '600', includeFontPadding: false } as any}>Clear</Text>
-              </Pressable>
-            </View>
-          </View>
-
-          {/* Canvas — fills full width × available height */}
-          <View
-            ref={freeCanvasRef}
-            onLayout={() => { freeCanvasRef.current?.measure((_fx, _fy, _w, _h, px, py) => { freeOrigin.current = { x: px, y: py }; }); }}
-            style={{
-              width: freeBoardW, height: freeBoardH, alignSelf: 'center',
-              flexDirection: 'row', flexWrap: 'wrap',
-              borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)',
-            }}
-            {...drawPan.panHandlers}
-          >
-            {freeCells.map((color, i) => (
-              <View key={i} style={{
-                width: freeCellW, height: freeCellH,
-                backgroundColor: color ?? '#0A0B1E',
-                borderRightWidth: 0.5, borderBottomWidth: 0.5,
-                borderColor: 'rgba(255,255,255,0.04)',
-              }}>
-                {color ? (
-                  <View style={{
-                    position: 'absolute', top: 1, left: 1,
-                    width: Math.max(2, freeCellW * 0.3),
-                    height: Math.max(2, freeCellH * 0.25),
-                    backgroundColor: 'rgba(255,255,255,0.22)', borderRadius: 1,
-                  }} />
-                ) : null}
-              </View>
-            ))}
-          </View>
-
-          {/* Freeform toolbar */}
-          <View style={{
-            position: 'absolute', bottom: 0, left: 0, right: 0, height: TOOLBAR_H,
-            backgroundColor: 'rgba(8,9,26,0.97)',
-            borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)',
-            paddingHorizontal: 12, paddingTop: 10,
-          }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <View style={[{
-                width: 24, height: 24, borderRadius: 5,
-                backgroundColor: erasing ? 'transparent' : activeColor,
-                borderWidth: 2, borderColor: erasing ? '#FF6B6B' : '#fff',
-                alignItems: 'center', justifyContent: 'center',
-              }]}>
-                {erasing ? <MaterialIcons name="auto-fix-high" size={14} color="#FF6B6B" /> : null}
-              </View>
-              <View style={{ flex: 1, height: 3, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 2 }}>
-                <View style={{ height: 3, width: `${freePct}%` as any, backgroundColor: erasing ? '#FF6B6B' : activeColor, borderRadius: 2 }} />
-              </View>
-              <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', includeFontPadding: false } as any}>{freePct}%</Text>
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
-              {FREE_PALETTE.map(col => (
-                <Pressable
-                  key={col}
-                  onPress={() => { setActiveColor(col); setErasing(false); }}
-                  style={[{
-                    width: 32, height: 32, borderRadius: 7,
-                    backgroundColor: col,
-                    borderWidth: activeColor === col && !erasing ? 3 : 1,
-                    borderColor: activeColor === col && !erasing ? '#fff' : 'rgba(255,255,255,0.12)',
-                  }]}
-                />
-              ))}
-            </ScrollView>
-          </View>
-        </>
-      ) : null}
-
-      {/* ─── PAINT BY NUMBER MODE ──────────────────────────────────────────── */}
-      {mode === 'paint-by-number' ? (
-        <>
-          {/* No image yet: search UI */}
-          {!pbnImageUri && !pbnLoading ? (
-            <ScrollView
-              contentContainerStyle={{ padding: 20, gap: 20 }}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {/* Header */}
-              <View style={{ alignItems: 'center', gap: 8 }}>
-                <Text style={{ fontSize: 26, includeFontPadding: false } as any}>🔢</Text>
-                <Text style={{ fontSize: 18, fontWeight: '800', color: '#fff', textAlign: 'center', includeFontPadding: false } as any}>Paint by Number</Text>
-                <Text style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', textAlign: 'center', lineHeight: 19, includeFontPadding: false } as any}>
-                  Search any subject — an AI cartoon image will be created and converted into a numbered color-fill puzzle.
-                </Text>
-              </View>
-
-              {/* Search bar */}
-              <View style={{
-                flexDirection: 'row', alignItems: 'center', gap: 8,
-                backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: Radius.xl,
-                borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.15)',
-                paddingHorizontal: 14, paddingVertical: 10,
-              }}>
-                <MaterialIcons name="search" size={18} color="rgba(255,255,255,0.4)" />
-                {Platform.OS === 'web' ? (
-                  <input
-                    value={pbnSearch}
-                    onChange={(e: any) => setPbnSearch(e.target.value)}
-                    onKeyDown={(e: any) => { if (e.key === 'Enter') handleSearch(pbnSearch); }}
-                    placeholder="Search a subject (e.g. sunset, tiger, flowers…)"
-                    style={{
-                      flex: 1, background: 'transparent', border: 'none', outline: 'none',
-                      color: '#fff', fontSize: 15, fontFamily: 'inherit',
-                    } as any}
-                  />
-                ) : (
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={{ fontSize: 15, color: pbnSearch ? '#fff' : 'rgba(255,255,255,0.3)', includeFontPadding: false } as any}
-                      onPress={() => {}}
-                    >
-                      {pbnSearch || 'Tap suggestions below…'}
-                    </Text>
-                  </View>
-                )}
-                {pbnSearch ? (
-                  <Pressable onPress={() => setPbnSearch('')} hitSlop={8}>
-                    <MaterialIcons name="close" size={16} color="rgba(255,255,255,0.4)" />
-                  </Pressable>
-                ) : null}
-              </View>
-
-              {/* Search button */}
-              <Pressable
-                onPress={() => handleSearch(pbnSearch || 'colorful butterfly')}
-                style={({ pressed }) => [{
-                  alignItems: 'center', justifyContent: 'center',
-                  backgroundColor: '#4ECDC4', borderRadius: Radius.xl,
-                  paddingVertical: 14, flexDirection: 'row', gap: 8,
-                  opacity: pressed ? 0.85 : 1,
-                }]}
-              >
-                <MaterialIcons name="auto-awesome" size={18} color="#000" />
-                <Text style={{ fontSize: 15, fontWeight: '800', color: '#000', includeFontPadding: false } as any}>
-                  {pbnSearch ? `Create "${pbnSearch}"` : 'Surprise me!'}
-                </Text>
-              </Pressable>
-
-              {pbnError ? (
-                <View style={{ backgroundColor: '#FF6B6B15', borderRadius: Radius.lg, padding: 12, borderWidth: 1, borderColor: '#FF6B6B40', flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
-                  <MaterialIcons name="error-outline" size={14} color="#FF6B6B" />
-                  <Text style={{ flex: 1, fontSize: 13, color: '#FF6B6B', lineHeight: 18, includeFontPadding: false } as any}>{pbnError}</Text>
-                </View>
-              ) : null}
-
-              {/* Suggestions grid */}
-              <View>
-                <Text style={{ fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.3)', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 12, includeFontPadding: false } as any}>Suggestions</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                  {suggestions.map((s, i) => (
-                    <Pressable
-                      key={i}
-                      onPress={() => {
-                        const clean = s.replace(/^[\u{1F000}-\u{1FFFF}\u2600-\u26FF\u2700-\u27BF\s]+/u, '').trim();
-                        setPbnSearch(clean);
-                        handleSearch(clean);
-                      }}
-                      style={({ pressed }) => [{
-                        paddingHorizontal: 13, paddingVertical: 8,
-                        borderRadius: Radius.full, borderWidth: 1.5,
-                        borderColor: '#4ECDC430', backgroundColor: '#4ECDC410',
-                      }, pressed && { opacity: 0.7 }]}
-                    >
-                      <Text style={{ fontSize: 13, color: '#4ECDC4', fontWeight: '600', includeFontPadding: false } as any}>{s}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
-
-              {/* How it works */}
-              <View style={{ backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: Radius.lg, padding: 14, gap: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)' }}>
-                <Text style={{ fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.6)', includeFontPadding: false } as any}>How it works</Text>
-                {[
-                  { n: '1', t: 'AI generates a flat-color cartoon image of your subject' },
-                  { n: '2', t: 'Image is analyzed and divided into numbered color regions' },
-                  { n: '3', t: 'Pick a color from the palette and tap cells to fill them in' },
-                  { n: '4', t: 'Use the bucket fill to instantly fill entire color regions' },
-                ].map(step => (
-                  <View key={step.n} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
-                    <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#4ECDC430', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      <Text style={{ fontSize: 12, fontWeight: '800', color: '#4ECDC4', includeFontPadding: false } as any}>{step.n}</Text>
-                    </View>
-                    <Text style={{ flex: 1, fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 18, includeFontPadding: false } as any}>{step.t}</Text>
-                  </View>
-                ))}
-              </View>
-            </ScrollView>
-          ) : null}
-
-          {/* Loading state */}
-          {(pbnLoading || pbnProcessing) ? (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 }}>
-              <ActivityIndicator size="large" color="#4ECDC4" />
-              <Text style={{ fontSize: 15, fontWeight: '700', color: 'rgba(255,255,255,0.7)', textAlign: 'center', includeFontPadding: false } as any}>
-                {pbnProcessing ? 'Analyzing colors…' : 'Generating your cartoon image…'}
-              </Text>
-              <Text style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)', textAlign: 'center', includeFontPadding: false } as any}>
-                {pbnProcessing ? 'Extracting color regions from image' : 'AI is painting your subject (15–45 seconds)'}
-              </Text>
-            </View>
-          ) : null}
-
-          {/* PBN canvas */}
-          {pbnImageUri && !pbnLoading && !pbnProcessing && pbnPixelColors.length > 0 ? (
-            <>
-              {/* Top bar */}
-              <View style={{ height: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <View style={{ height: 4, width: 80, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2 }}>
-                    <View style={{ height: 4, width: `${pbnProgress}%` as any, backgroundColor: '#4ECDC4', borderRadius: 2 }} />
-                  </View>
-                  <Text style={{ fontSize: 12, color: '#4ECDC4', fontWeight: '700', includeFontPadding: false } as any}>{pbnProgress}%</Text>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 6 }}>
-                  <Pressable
-                    onPress={() => setShowNumbers(!showNumbers)}
-                    style={({ pressed }) => [{
-                      flexDirection: 'row', alignItems: 'center', gap: 4,
-                      paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.full,
-                      borderWidth: 1.5, borderColor: showNumbers ? '#4ECDC4' : 'rgba(255,255,255,0.1)',
-                      backgroundColor: showNumbers ? '#4ECDC420' : 'transparent',
-                    }, pressed && { opacity: 0.7 }]}
-                  >
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: showNumbers ? '#4ECDC4' : 'rgba(255,255,255,0.35)', includeFontPadding: false } as any}>123</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={clearPbn}
-                    style={({ pressed }) => [{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }, pressed && { opacity: 0.6 }]}
-                  >
-                    <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontWeight: '600', includeFontPadding: false } as any}>Reset</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => { setPbnImageUri(null); setPbnSearch(''); setPbnProgress(0); }}
-                    style={({ pressed }) => [{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }, pressed && { opacity: 0.6 }]}
-                  >
-                    <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontWeight: '600', includeFontPadding: false } as any}>New</Text>
-                  </Pressable>
-                </View>
-              </View>
-
-              {/* Grid */}
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ flexGrow: 1 }}
-              >
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={{ flexGrow: 1 }}
-                >
-                  <View
-                    ref={pbnCanvasRef}
-                    onLayout={() => {
-                      pbnCanvasRef.current?.measure((_fx, _fy, _w, _h, px, py) => { pbnOrigin.current = { x: px, y: py }; });
-                    }}
-                    style={{
-                      width: pbnBoardW, height: pbnBoardH,
-                      flexDirection: 'row', flexWrap: 'wrap',
-                      borderTopWidth: 1, borderLeftWidth: 1,
-                      borderColor: 'rgba(255,255,255,0.12)',
-                    }}
-                    {...pbnPan.panHandlers}
-                  >
-                    {pbnUserColors.map((userColor, i) => {
-                      const expectedColor = pbnPixelColors[i];
-                      const colorNum = expectedColor ? getColorNum(expectedColor) : '';
-                      const isCorrect = userColor === expectedColor;
-                      const bgColor = userColor ?? 'rgba(255,255,255,0.03)';
-                      const isActive = pbnActiveColor === expectedColor;
-                      return (
-                        <Pressable
-                          key={i}
-                          onPress={() => pbnFillBucket(i)}
-                          style={[{
-                            width: pbnCellSize, height: pbnCellSize,
-                            backgroundColor: bgColor,
-                            borderRightWidth: 0.5, borderBottomWidth: 0.5,
-                            borderColor: isActive ? expectedColor + '60' : 'rgba(255,255,255,0.08)',
-                            alignItems: 'center', justifyContent: 'center',
-                          }]}
-                        >
-                          {!userColor && showNumbers && pbnCellSize >= 12 ? (
-                            <Text style={{
-                              fontSize: Math.max(5, pbnCellSize * 0.35),
-                              color: isActive ? '#fff' : 'rgba(255,255,255,0.35)',
-                              fontWeight: isActive ? '900' : '600',
-                              includeFontPadding: false,
-                            } as any}>{colorNum}</Text>
-                          ) : null}
-                          {isCorrect && userColor ? (
-                            <View style={{
-                              position: 'absolute', top: 1, left: 1,
-                              width: Math.max(2, pbnCellSize * 0.3),
-                              height: Math.max(2, pbnCellSize * 0.25),
-                              backgroundColor: 'rgba(255,255,255,0.28)', borderRadius: 1,
-                            }} />
-                          ) : null}
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </ScrollView>
-              </ScrollView>
-
-              {/* PBN toolbar */}
-              <View style={{
-                height: TOOLBAR_H,
-                backgroundColor: 'rgba(8,9,26,0.97)',
-                borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)',
-                paddingHorizontal: 12, paddingTop: 8,
-              }}>
-                {/* Color palette */}
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, alignItems: 'center', paddingBottom: 4 }}>
-                  {pbnPalette.map((color, idx) => {
-                    const num = idx + 1;
-                    const isSelected = pbnActiveColor === color;
-                    const filledCount = pbnUserColors.filter(c => c === color).length;
-                    const totalCount = pbnPixelColors.filter(c => c === color).length;
-                    const complete = filledCount === totalCount && totalCount > 0;
-                    return (
-                      <Pressable
-                        key={color}
-                        onPress={() => {
-                          setPbnActiveColor(color);
-                          pbnActiveColorRef.current = color;
-                        }}
-                        style={[{
-                          alignItems: 'center', justifyContent: 'center', gap: 2,
-                          width: 42, height: 52,
-                          borderRadius: Radius.md,
-                          borderWidth: isSelected ? 2.5 : 1,
-                          borderColor: isSelected ? '#fff' : 'rgba(255,255,255,0.12)',
-                          backgroundColor: isSelected ? color + '30' : 'transparent',
-                          opacity: complete ? 0.45 : 1,
-                        }]}
-                      >
-                        <View style={{
-                          width: 28, height: 28, borderRadius: 6,
-                          backgroundColor: color,
-                          borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
-                          alignItems: 'center', justifyContent: 'center',
-                        }}>
-                          {complete ? <MaterialIcons name="check" size={14} color="#fff" /> : null}
-                        </View>
-                        <Text style={{
-                          fontSize: 9, fontWeight: '800',
-                          color: isSelected ? '#fff' : 'rgba(255,255,255,0.35)',
-                          includeFontPadding: false,
-                        } as any}>{num}</Text>
-                      </Pressable>
-                    );
-                  })}
-                  {/* Bucket fill button */}
-                  <View style={{ width: 1, height: 40, backgroundColor: 'rgba(255,255,255,0.1)', marginHorizontal: 4 }} />
-                  <View style={{ alignItems: 'center', gap: 2 }}>
-                    <View style={{
-                      width: 42, height: 42, borderRadius: Radius.md,
-                      backgroundColor: '#4ECDC415', borderWidth: 1, borderColor: '#4ECDC440',
-                      alignItems: 'center', justifyContent: 'center',
-                    }}>
-                      <MaterialIcons name="format-color-fill" size={18} color="#4ECDC4" />
-                    </View>
-                    <Text style={{ fontSize: 8, color: '#4ECDC4', fontWeight: '700', includeFontPadding: false } as any}>Tap fill</Text>
-                  </View>
-                </ScrollView>
-              </View>
-            </>
-          ) : null}
-        </>
-      ) : null}
-    </View>
-  );
-}
-
-// =============================================================================
-// MOODBEAT — imported from components/feature/MoodBeatGame.tsx
-// (extracted to reduce file size for Hermes JS engine compatibility)
-// =============================================================================
-
-// ─── stub (unused — kept to avoid dead-code errors on references below) ───────
+function _extractColorRegions_stub_DISABLED_NOOP(imageUri: string, cols: number, rows: number): Promise<{ palette: string[]; regions: PbnRegion[]; pixelColors: string[] }> { return Promise.resolve({ palette: [], regions: [], pixelColors: [] }); }
+function _PixelArtGame_INLINE_DISABLED({ C }: { C: typeof DarkColors }) { return null; }
 function _mbUnused(): null { return null; }
 async function _mbUnused2(): Promise<null> { return null; }
 function _mbUnused3(_sr: number): number[] { return []; }
-
-// MoodBeatGame component is imported at the top of this file from
-// components/feature/MoodBeatGame.tsx — no inline definition needed.
-
-// =============================================================================
-// MEDITATION MODULE COMPONENT
-// (Note: MoodBeatGame is imported above from components/feature/MoodBeatGame.tsx)
-// =============================================================================
-function _unusedPlaceholder_noop() {
-  // Reactive dimensions — avoids SSR/web 0-value crash from Dimensions.get at render time
-  const [screenW, setScreenW] = useState(() => Math.max(320, Dimensions.get('window').width || 320));
-  useEffect(() => {
-    const sub = Dimensions.addEventListener('change', ({ window: w }) => {
-      setScreenW(Math.max(320, w.width || 320));
-    });
-    return () => sub?.remove();
-  }, []);
-  const SW = screenW;
-
-  // Mounted guard — prevents setState after unmount (causes native crashes)
-  const mountedRef = useRef(true);
-  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
-
-  const [mode, setMode] = useState<'pads' | 'sequencer'>('pads');
-  const [kitIdx, setKitIdx] = useState(0);
-  const [bpm, setBpm] = useState(95);
-  const [swing, setSwing] = useState(20);
-  const [playing, setPlaying] = useState(false);
-  const [currentStep, setCurrentStep] = useState(-1);
-  // steps[track][step] = true/false
-  const [steps, setSteps] = useState<boolean[][]>(() =>
-    Array.from({ length: MB_NUM_TRACKS }, () => Array(MB_NUM_STEPS).fill(false))
-  );
-  const [padFlash, setPadFlash] = useState<Partial<Record<MbDrumId, boolean>>>({});
-  const [trackFlash, setTrackFlash] = useState<boolean[]>(Array(MB_NUM_TRACKS).fill(false));
-
-  const { triggerSound } = useMbAudio();
-
-  // Mutable refs for sequencer — avoids stale closure issues entirely
-  const stepsRef  = useRef(steps);
-  const bpmRef    = useRef(bpm);
-  const swingRef  = useRef(swing);
-  const kitIdxRef = useRef(kitIdx);
-  const timerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stepRef   = useRef(-1);
-  useEffect(() => { stepsRef.current = steps; }, [steps]);
-  useEffect(() => { bpmRef.current = bpm; }, [bpm]);
-  useEffect(() => { swingRef.current = swing; }, [swing]);
-  useEffect(() => { kitIdxRef.current = kitIdx; }, [kitIdx]);
-
-  // Cleanup timer on unmount
-  useEffect(() => () => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-  }, []);
-
-  // Tap tempo
-  const tapTimesRef = useRef<number[]>([]);
-  const handleTapTempo = useCallback(() => {
-    const now = Date.now();
-    const taps = tapTimesRef.current;
-    taps.push(now);
-    if (taps.length > 1 && now - taps[taps.length - 2] > 2500) taps.splice(0, taps.length - 1);
-    if (taps.length > 8) taps.shift();
-    if (taps.length >= 2) {
-      const intervals = taps.slice(1).map((t, i) => t - taps[i]);
-      const avgMs = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-      setBpm(Math.max(40, Math.min(200, Math.round(60000 / avgMs))));
-    }
-  }, []);
-
-  // Simple interval sequencer — reliable on all platforms, no lookahead complexity
-  useEffect(() => {
-    if (!playing) {
-      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-      if (mountedRef.current) { setCurrentStep(-1); setTrackFlash(Array(MB_NUM_TRACKS).fill(false)); }
-      return;
-    }
-    stepRef.current = -1;
-    const intervalMs = Math.max(50, Math.round((60000 / bpm) / 4));
-    timerRef.current = setInterval(() => {
-      if (!mountedRef.current) return;
-      const nextStep = (stepRef.current + 1) % MB_NUM_STEPS;
-      stepRef.current = nextStep;
-      const safeKitIdx = Math.min(kitIdxRef.current, MB_KITS.length - 1);
-      const kit = MB_KITS[safeKitIdx];
-      const curSteps = stepsRef.current;
-      const activeIds: MbDrumId[] = [];
-      for (let t = 0; t < MB_NUM_TRACKS; t++) {
-        if (curSteps[t]?.[nextStep]) {
-          const pad = kit.pads.find(p => p.row === t);
-          if (pad) { triggerSound(pad.id, 0.85); activeIds.push(pad.id); }
-        }
-      }
-      setCurrentStep(nextStep);
-      if (activeIds.length > 0) {
-        setTrackFlash(prev => prev.map((_, t) => {
-          const pad = MB_KITS[Math.min(kitIdxRef.current, MB_KITS.length - 1)].pads.find(p => p.row === t);
-          return pad ? activeIds.includes(pad.id) : false;
-        }));
-        setTimeout(() => { if (mountedRef.current) setTrackFlash(Array(MB_NUM_TRACKS).fill(false)); }, 80);
-      }
-    }, intervalMs);
-    return () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
-  // Re-create interval only when playing/bpm changes (triggerSound is stable)
-  }, [playing, bpm, triggerSound]); // eslint-disable-line
-
-  const handlePadPress = useCallback((pad: MbPad) => {
-    try { triggerSound(pad.id, 0.9); } catch {}
-    setPadFlash(prev => ({ ...prev, [pad.id]: true }));
-    setTimeout(() => { if (mountedRef.current) setPadFlash(prev => ({ ...prev, [pad.id]: false })); }, 100);
-  }, [triggerSound]);
-
-  const toggleStep = useCallback((track: number, step: number) => {
-    setSteps(prev => {
-      const next = prev.map(row => [...row]);
-      next[track][step] = !next[track][step];
-      return next;
-    });
-  }, []);
-
-  const clearAll = useCallback(() => {
-    setSteps(Array.from({ length: MB_NUM_TRACKS }, () => Array(MB_NUM_STEPS).fill(false)));
-  }, []);
-
-  // Preset patterns
-  const loadPreset = useCallback((preset: 'four-on-floor' | 'boom-bap' | 'breakbeat') => {
-    const p = Array.from({ length: MB_NUM_TRACKS }, () => Array(MB_NUM_STEPS).fill(false));
-    if (preset === 'four-on-floor') {
-      p[0] = [1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0].map(Boolean);
-      p[1] = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0].map(Boolean);
-      p[2] = [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0].map(Boolean);
-      p[3] = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,1].map(Boolean);
-    } else if (preset === 'boom-bap') {
-      p[0] = [1,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0].map(Boolean);
-      p[1] = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0].map(Boolean);
-      p[2] = [1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1].map(Boolean);
-      p[3] = [0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0].map(Boolean);
-    } else {
-      p[0] = [1,0,0,1,0,0,1,0,0,0,1,0,0,1,0,0].map(Boolean);
-      p[1] = [0,0,1,0,0,0,1,0,0,0,0,1,0,0,1,0].map(Boolean);
-      p[2] = [1,0,1,1,1,0,1,0,1,0,1,1,1,0,1,0].map(Boolean);
-      p[4] = [0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1].map(Boolean);
-    }
-    setSteps(p);
-  }, []);
-
-  const kit = MB_KITS[kitIdx];
-  const HEADER_H = 100;
-  const padSize = Math.max(60, Math.min(80, Math.floor((SW - 24) / 4) - 4));
-  const seqRowH = 40;
-  const seqCellW = Math.max(18, Math.floor((SW - 68) / MB_NUM_STEPS));
-
-  return (
-    <View style={{ flex: 1, backgroundColor: '#080A18', paddingTop: HEADER_H }}>
-      {/* Kit + BPM header */}
-      <View style={{ paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)', gap: 8 }}>
-        {/* Kit row */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
-          {MB_KITS.map((k, i) => (
-            <Pressable key={k.name} onPress={() => setKitIdx(i)}
-              style={({ pressed }) => [{
-                paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
-                borderWidth: 1.5,
-                borderColor: kitIdx === i ? '#38BDF8' : 'rgba(255,255,255,0.15)',
-                backgroundColor: kitIdx === i ? '#38BDF820' : 'transparent',
-              }, pressed && { opacity: 0.7 }]}>
-              <Text style={{ fontSize: 12, fontWeight: '700', color: kitIdx === i ? '#38BDF8' : 'rgba(255,255,255,0.5)', includeFontPadding: false } as any}>{k.name}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
-
-        {/* BPM + Swing + Tap */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          {/* BPM */}
-          <View style={{ alignItems: 'center', minWidth: 48 }}>
-            <Text style={{ fontSize: 22, fontWeight: '900', color: '#38BDF8', includeFontPadding: false } as any}>{bpm}</Text>
-            <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', fontWeight: '700', letterSpacing: 1, includeFontPadding: false } as any}>BPM</Text>
-          </View>
-          <View style={{ flex: 1, gap: 2 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', width: 26, includeFontPadding: false } as any}>BPM</Text>
-              <View style={{ flex: 1, height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2 }}>
-                <View style={{ height: 4, width: `${((bpm - 40) / 160) * 100}%` as any, backgroundColor: '#38BDF8', borderRadius: 2 }} />
-              </View>
-              <View style={{ flexDirection: 'row', gap: 4 }}>
-                <Pressable onPress={() => setBpm(b => Math.max(40, b - 1))} style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', includeFontPadding: false } as any}>-</Text></Pressable>
-                <Pressable onPress={() => setBpm(b => Math.min(200, b + 1))} style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', includeFontPadding: false } as any}>+</Text></Pressable>
-              </View>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', width: 26, includeFontPadding: false } as any}>SWG</Text>
-              <View style={{ flex: 1, height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2 }}>
-                <View style={{ height: 4, width: `${(swing / 70) * 100}%` as any, backgroundColor: '#A78BFA', borderRadius: 2 }} />
-              </View>
-              <Text style={{ fontSize: 10, color: '#A78BFA', fontWeight: '700', width: 26, textAlign: 'right', includeFontPadding: false } as any}>{swing}%</Text>
-              <View style={{ flexDirection: 'row', gap: 4 }}>
-                <Pressable onPress={() => setSwing(s => Math.max(0, s - 5))} style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', includeFontPadding: false } as any}>-</Text></Pressable>
-                <Pressable onPress={() => setSwing(s => Math.min(70, s + 5))} style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', includeFontPadding: false } as any}>+</Text></Pressable>
-              </View>
-            </View>
-          </View>
-          <Pressable onPress={handleTapTempo}
-            style={({ pressed }) => [{
-              paddingHorizontal: 12, paddingVertical: 8, borderRadius: Radius.lg,
-              backgroundColor: '#38BDF815', borderWidth: 1.5, borderColor: '#38BDF840',
-              alignItems: 'center',
-            }, pressed && { backgroundColor: '#38BDF840', transform: [{ scale: 0.95 }] }]}>
-            <Text style={{ fontSize: 11, fontWeight: '800', color: '#38BDF8', includeFontPadding: false } as any}>TAP</Text>
-            <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', includeFontPadding: false } as any}>TEMPO</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      {/* Mode toggle */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 8, gap: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' }}>
-        <Pressable onPress={() => setMode('pads')}
-          style={({ pressed }) => [{ flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: mode === 'pads' ? '#38BDF8' : 'rgba(255,255,255,0.1)', backgroundColor: mode === 'pads' ? '#38BDF820' : 'transparent' }, pressed && { opacity: 0.7 }]}>
-          <Text style={{ fontSize: 13, fontWeight: '700', color: mode === 'pads' ? '#38BDF8' : 'rgba(255,255,255,0.4)', includeFontPadding: false } as any}>🥁 Live Pads</Text>
-        </Pressable>
-        <Pressable onPress={() => setMode('sequencer')}
-          style={({ pressed }) => [{ flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: mode === 'sequencer' ? '#A78BFA' : 'rgba(255,255,255,0.1)', backgroundColor: mode === 'sequencer' ? '#A78BFA20' : 'transparent' }, pressed && { opacity: 0.7 }]}>
-          <Text style={{ fontSize: 13, fontWeight: '700', color: mode === 'sequencer' ? '#A78BFA' : 'rgba(255,255,255,0.4)', includeFontPadding: false } as any}>🎛️ Sequencer</Text>
-        </Pressable>
-      </View>
-
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 12, gap: 12, paddingBottom: 120 }}>
-        {/* Live Pad Grid — always visible */}
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignSelf: 'center', width: padSize * 4 + 12 }}>
-          {kit.pads.map((pad) => {
-            const isFlashing = padFlash[pad.id];
-            return (
-              <Pressable key={pad.id} onPress={() => handlePadPress(pad)}
-                style={({ pressed }) => [{
-                  width: padSize, height: padSize,
-                  borderRadius: 12,
-                  backgroundColor: isFlashing ? pad.color + '50' : pad.color + '18',
-                  borderWidth: 2,
-                  borderColor: isFlashing ? pad.color : pad.color + '50',
-                  alignItems: 'center', justifyContent: 'center', gap: 3,
-                  shadowColor: isFlashing ? pad.color : 'transparent',
-                  shadowOffset: { width: 0, height: 0 },
-                  shadowOpacity: isFlashing ? 0.9 : 0,
-                  shadowRadius: isFlashing ? 14 : 0,
-                  elevation: isFlashing ? 6 : 0,
-                  transform: [{ scale: pressed ? 0.92 : isFlashing ? 1.04 : 1 }],
-                }, pressed && { backgroundColor: pad.color + '40' }]}>
-                <Text style={{ fontSize: padSize > 70 ? 22 : 18 }}>{pad.emoji}</Text>
-                <Text style={{ fontSize: padSize > 70 ? 11 : 9, fontWeight: '800', color: pad.color, includeFontPadding: false } as any}>{pad.name}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {/* Sequencer */}
-        {mode === 'sequencer' ? (
-          <View style={{ gap: 2 }}>
-            {/* Step numbers header */}
-            <View style={{ flexDirection: 'row', paddingLeft: 56 }}>
-              {Array.from({ length: MB_NUM_STEPS }, (_, i) => (
-                <View key={i} style={[
-                  { width: seqCellW, height: 16, alignItems: 'center', justifyContent: 'center',
-                    backgroundColor: currentStep === i ? 'rgba(56,189,248,0.25)' : 'transparent',
-                    borderRadius: 3,
-                  },
-                ]}>
-                  {i % 4 === 0 ? (
-                    <Text style={{ fontSize: 8, fontWeight: '700', color: currentStep === i ? '#38BDF8' : 'rgba(255,255,255,0.25)', includeFontPadding: false } as any}>{i/4+1}</Text>
-                  ) : null}
-                </View>
-              ))}
-            </View>
-
-            {/* Track rows */}
-            {Array.from({ length: MB_NUM_TRACKS }, (_, track) => {
-              const pad = kit.pads.find(p => p.row === track);
-              if (!pad) return null;
-              const isFlash = trackFlash[track];
-              return (
-                <View key={track} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  {/* Track label */}
-                  <Pressable onPress={() => handlePadPress(pad)} style={[{
-                    width: 50, height: seqRowH,
-                    borderRadius: 8,
-                    backgroundColor: isFlash ? pad.color + '40' : pad.color + '15',
-                    borderWidth: 1.5, borderColor: isFlash ? pad.color : pad.color + '40',
-                    alignItems: 'center', justifyContent: 'center',
-                    shadowColor: isFlash ? pad.color : 'transparent',
-                    shadowOpacity: isFlash ? 0.8 : 0, shadowRadius: 8, elevation: isFlash ? 4 : 0,
-                  }]}>
-                    <Text style={{ fontSize: 14 }}>{pad.emoji}</Text>
-                    <Text style={{ fontSize: 7, fontWeight: '800', color: pad.color, includeFontPadding: false } as any}>{pad.name}</Text>
-                  </Pressable>
-                  {/* Steps */}
-                  {Array.from({ length: MB_NUM_STEPS }, (_, step) => {
-                    const active = steps[track][step];
-                    const isCurrent = currentStep === step && playing;
-                    const isDownbeat = step % 4 === 0;
-                    return (
-                      <Pressable key={step} onPress={() => toggleStep(track, step)}
-                        style={[{
-                          width: seqCellW, height: seqRowH,
-                          borderRadius: 5,
-                          backgroundColor: active
-                            ? isCurrent ? pad.color : pad.color + '90'
-                            : isCurrent ? 'rgba(255,255,255,0.15)' : isDownbeat ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)',
-                          borderWidth: isCurrent ? 1.5 : 1,
-                          borderColor: active ? pad.color : isCurrent ? 'rgba(255,255,255,0.4)' : isDownbeat ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)',
-                          shadowColor: active && isCurrent ? pad.color : 'transparent',
-                          shadowOpacity: active && isCurrent ? 0.9 : 0, shadowRadius: 6, elevation: active && isCurrent ? 3 : 0,
-                        }]}
-                      />
-                    );
-                  })}
-                </View>
-              );
-            })}
-          </View>
-        ) : null}
-
-        {/* Preset patterns */}
-        <View style={{ gap: 6 }}>
-          <Text style={{ fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,0.3)', letterSpacing: 1.2, textTransform: 'uppercase', includeFontPadding: false } as any}>Quick Patterns</Text>
-          <View style={{ flexDirection: 'row', gap: 6 }}>
-            {(['four-on-floor', 'boom-bap', 'breakbeat'] as const).map(p => (
-              <Pressable key={p} onPress={() => loadPreset(p)}
-                style={({ pressed }) => [{
-                  flex: 1, paddingVertical: 8, borderRadius: Radius.lg,
-                  backgroundColor: 'rgba(255,255,255,0.04)',
-                  borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-                  alignItems: 'center',
-                }, pressed && { opacity: 0.7 }]}>
-                <Text style={{ fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.6)', includeFontPadding: false, textAlign: 'center' } as any}>
-                  {p === 'four-on-floor' ? '🎶 4-on-Floor' : p === 'boom-bap' ? '🥊 Boom Bap' : '💥 Breakbeat'}
-                </Text>
-              </Pressable>
-            ))}
-            <Pressable onPress={clearAll}
-              style={({ pressed }) => [{
-                paddingHorizontal: 10, paddingVertical: 8, borderRadius: Radius.lg,
-                backgroundColor: 'rgba(255,107,107,0.08)',
-                borderWidth: 1, borderColor: 'rgba(255,107,107,0.2)',
-                alignItems: 'center', justifyContent: 'center',
-              }, pressed && { opacity: 0.7 }]}>
-              <Text style={{ fontSize: 11, fontWeight: '700', color: '#FF6B6B', includeFontPadding: false } as any}>✕</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        {/* Info */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: Radius.lg, padding: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
-          <MaterialIcons name="lightbulb-outline" size={13} color="rgba(255,255,255,0.3)" />
-          <Text style={{ flex: 1, fontSize: 11, color: 'rgba(255,255,255,0.3)', lineHeight: 16, includeFontPadding: false } as any}>
-            Tap pads live · Switch to Sequencer to program patterns · Swing adds groove · All sounds synthesized on-device, no internet needed
-          </Text>
-        </View>
-      </ScrollView>
-
-      {/* Transport bar */}
-      <View style={{
-        position: 'absolute', bottom: 0, left: 0, right: 0,
-        backgroundColor: '#0D0F1E',
-        borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)',
-        paddingVertical: 10, paddingHorizontal: 20, paddingBottom: 20,
-        flexDirection: 'row', alignItems: 'center', gap: 12,
-      }}>
-        {/* Step indicator */}
-        <View style={{ flexDirection: 'row', gap: 2, flex: 1 }}>
-          {Array.from({ length: 16 }, (_, i) => (
-            <View key={i} style={{
-              flex: 1, height: 6, borderRadius: 3,
-              backgroundColor: currentStep === i && playing
-                ? '#38BDF8'
-                : i % 4 === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)',
-            }} />
-          ))}
-        </View>
-
-        {/* Play/Stop */}
-        <Pressable
-          onPress={() => setPlaying(p => !p)}
-          style={({ pressed }) => [{
-            width: 52, height: 52, borderRadius: 26,
-            backgroundColor: playing ? '#FF6B6B20' : '#38BDF820',
-            borderWidth: 2, borderColor: playing ? '#FF6B6B' : '#38BDF8',
-            alignItems: 'center', justifyContent: 'center',
-            shadowColor: playing ? '#FF6B6B' : '#38BDF8',
-            shadowOpacity: 0.5, shadowRadius: 10, elevation: 5,
-          }, pressed && { transform: [{ scale: 0.92 }] }]}>
-          <MaterialIcons name={playing ? 'stop' : 'play-arrow'} size={28} color={playing ? '#FF6B6B' : '#38BDF8'} />
-        </Pressable>
-      </View>
-    </View>
-  );
-}
+function _unusedPlaceholder_noop() {}
 
 // =============================================================================
 // MEDITATION MODULE COMPONENT
@@ -3180,12 +1866,10 @@ function MeditationModule({ C, styles, meditationCategory, setMeditationCategory
   const filtered = useMemo(() => MEDITATION_VIDEOS.filter(v => meditationCategory === 'all' || v.category === meditationCategory), [meditationCategory]);
   const sessionsLeft = FREE_MEDITATION_LIMIT - freeMeditationCount;
   const isGated = !isPro && freeMeditationCount >= FREE_MEDITATION_LIMIT;
-
   const CATEGORY_COLORS: Record<MeditationCategory, string> = { all: C.primary, sleep: '#7C83FF', anxiety: '#4ADE80', mindfulness: '#FB923C', focus: '#F59E0B', frequencies: '#A78BFA' };
 
   return (
     <View style={{ gap: Spacing.lg }}>
-      {/* Intro banner */}
       <View style={{ backgroundColor: C.secondary + '12', borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: C.secondary + '30', flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
         <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: C.secondary + '25', alignItems: 'center', justifyContent: 'center' }}>
           <MaterialIcons name="self-improvement" size={24} color={C.secondary} />
@@ -3196,7 +1880,6 @@ function MeditationModule({ C, styles, meditationCategory, setMeditationCategory
         </View>
       </View>
 
-      {/* Session counter for free users */}
       {!isPro ? (
         <View style={{
           flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
@@ -3216,7 +1899,6 @@ function MeditationModule({ C, styles, meditationCategory, setMeditationCategory
         </View>
       ) : null}
 
-      {/* Category filter */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.sm, paddingHorizontal: 2, paddingVertical: 4 }}>
         {MEDITATION_CATEGORIES.map(cat => {
           const active = meditationCategory === cat.key;
@@ -3230,15 +1912,13 @@ function MeditationModule({ C, styles, meditationCategory, setMeditationCategory
         })}
       </ScrollView>
 
-      {/* Info note */}
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, backgroundColor: C.primary + '10', borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: C.primary + '30' }}>
         <MaterialIcons name="play-circle-outline" size={16} color={C.primary} />
         <Text style={{ flex: 1, fontSize: Typography.fontSizes.xs, color: C.primary, lineHeight: 16, includeFontPadding: false } as any}>
-          {Platform.OS === 'web' ? 'Videos open in an embedded YouTube player. An internet connection is required.' : 'Videos play inline — tap any session to start. Mood is tracked automatically when you close.'}
+          {Platform.OS === 'web' ? 'Videos open in an embedded YouTube player. An internet connection is required.' : 'Tap any session to start — video plays inside the app. Mood is tracked automatically when you close.'}
         </Text>
       </View>
 
-      {/* Meditation cards */}
       <View style={{ gap: Spacing.md }}>
         {filtered.map(video => {
           const cc = CATEGORY_COLORS[video.category];
@@ -3339,16 +2019,34 @@ function MeditationVideoModal({ video, C, onClose }: { video: MeditationVideo; C
     );
   }
 
-  const [playerReady, setPlayerReady] = useState(false);
-  const [playerError, setPlayerError] = useState(false);
+  // ─── Native: WebView loading the full YouTube watch page with embeds_referring_euri
+  // spoofed to https://www.youtube.com/ — this is the exact URL format that YouTube's
+  // own error page provides as its "Watch video on YouTube" link, which the user
+  // confirmed plays inline within the WebView rather than leaving the app.
+  // The standard embed URL (youtube.com/embed/...) triggers Error 152 on WKWebView.
+  // Loading the full watch page with this referrer parameter bypasses that block.
   const screenWidth = Math.max(1, Dimensions.get('window').width);
   const playerHeight = Math.round(screenWidth * 9 / 16);
-  // Use the statically required native player (loaded at module level)
-  const [YoutubePlayerComponent] = useState<any>(() => _YoutubePlayerNative);
+  const [webViewLoading, setWebViewLoading] = useState(true);
+  const [webViewError, setWebViewError] = useState(false);
+
+  // Full YouTube watch URL with embeds_referring_euri set to youtube.com — this is
+  // what YouTube generates for its own inline links and bypasses WKWebView restrictions.
+  const inlineWatchUrl = 'https://www.youtube.com/watch?v=' + video.youtubeId
+    + '&embeds_referring_euri=https%3A%2F%2Fwww.youtube.com%2F'
+    + '&source_ve_path=MTc4NDI0';
+
+  const openInYouTube = () => {
+    const appUrl = 'vnd.youtube://' + video.youtubeId;
+    Linking.canOpenURL(appUrl)
+      .then(canOpen => Linking.openURL(canOpen ? appUrl : youtubeWatchUrl))
+      .catch(() => Linking.openURL(youtubeWatchUrl).catch(() => {}));
+  };
 
   return (
     <Modal visible animationType="slide" transparent={false} onRequestClose={onClose} statusBarTranslucent={Platform.OS === 'android'}>
       <View style={{ flex: 1, backgroundColor: '#000' }}>
+        {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, paddingTop: 52, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md, backgroundColor: C.surface, borderBottomWidth: 1, borderBottomColor: C.border }}>
           <Pressable onPress={onClose} hitSlop={8} style={({ pressed }) => [{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.surfaceElevated, alignItems: 'center', justifyContent: 'center' }, pressed && { opacity: 0.7 }]}>
             <MaterialIcons name="arrow-back" size={22} color={C.textMuted} />
@@ -3361,31 +2059,46 @@ function MeditationVideoModal({ video, C, onClose }: { video: MeditationVideo; C
             <Text style={{ fontSize: 10, color: cc, fontWeight: '700', includeFontPadding: false } as any}>{MEDITATION_CATEGORIES.find(c => c.key === video.category)?.emoji} {video.category}</Text>
           </View>
         </View>
-        <View style={{ backgroundColor: '#000', width: '100%', height: playerHeight, justifyContent: 'center', alignItems: 'center' }}>
-          {!playerReady && !playerError ? (
-            <View style={{ position: 'absolute', alignItems: 'center', gap: Spacing.sm, zIndex: 1 }}>
+
+        {/* Video player — WebView loading the full YouTube watch page with referrer spoofing */}
+        <View style={{ width: screenWidth, height: playerHeight, backgroundColor: '#000' }}>
+          {_WebViewComponent ? (
+            <_WebViewComponent
+              source={{
+                uri: inlineWatchUrl,
+                headers: { Referer: 'https://www.youtube.com/' },
+              }}
+              style={{ width: screenWidth, height: playerHeight, backgroundColor: '#000' }}
+              allowsInlineMediaPlayback
+              mediaPlaybackRequiresUserAction={false}
+              javaScriptEnabled
+              domStorageEnabled
+              allowsFullscreenVideo
+              originWhitelist={['*']}
+              onLoadStart={() => { setWebViewLoading(true); setWebViewError(false); }}
+              onLoadEnd={() => setWebViewLoading(false)}
+              onError={() => { setWebViewLoading(false); setWebViewError(true); }}
+              onHttpError={(e: any) => { if (e?.nativeEvent?.statusCode >= 400) { setWebViewLoading(false); setWebViewError(true); } }}
+            />
+          ) : null}
+          {webViewLoading && !webViewError ? (
+            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#080910' }}>
               <ActivityIndicator size="large" color={cc} />
-              <Text style={{ fontSize: Typography.fontSizes.xs, color: 'rgba(255,255,255,0.5)', includeFontPadding: false } as any}>Loading player...</Text>
             </View>
           ) : null}
-          {playerError ? (
-            <View style={{ alignItems: 'center', gap: Spacing.md, padding: Spacing.xl }}>
-              <MaterialIcons name="error-outline" size={36} color={cc} />
-              <Text style={{ fontSize: Typography.fontSizes.sm, color: 'rgba(255,255,255,0.7)', textAlign: 'center', includeFontPadding: false } as any}>Could not load player.</Text>
-              <Pressable onPress={() => Linking.openURL(youtubeWatchUrl).catch(() => {})} style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: cc, borderRadius: Radius.lg, paddingHorizontal: 20, paddingVertical: 10 }, pressed && { opacity: 0.85 }]}>
-                <MaterialIcons name="open-in-new" size={16} color="#fff" />
-                <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff', includeFontPadding: false } as any}>Watch on YouTube</Text>
+          {webViewError ? (
+            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#080910', gap: 14 }}>
+              <MaterialIcons name="play-circle-outline" size={52} color={cc} />
+              <Text style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)', textAlign: 'center', paddingHorizontal: 24, includeFontPadding: false } as any}>Could not load video inline.{`\n`}Tap to open in YouTube.</Text>
+              <Pressable onPress={openInYouTube} style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: cc, borderRadius: Radius.lg, paddingHorizontal: 20, paddingVertical: 10 }, pressed && { opacity: 0.85 }]}>
+                <MaterialIcons name="play-arrow" size={18} color="#fff" />
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff', includeFontPadding: false } as any}>Open in YouTube</Text>
               </Pressable>
             </View>
           ) : null}
-          {YoutubePlayerComponent && !playerError ? (
-            <YoutubePlayerComponent height={playerHeight} width={screenWidth} videoId={video.youtubeId} play={false}
-              initialPlayerParams={{ autoplay: false, controls: true, rel: false, modestbranding: true, preventFullScreen: false }}
-              onReady={() => setPlayerReady(true)} onError={() => setPlayerError(true)}
-              webViewProps={{ allowsInlineMediaPlayback: true, javaScriptEnabled: true, domStorageEnabled: true, allowsFullscreenVideo: true, androidLayerType: 'hardware' as any }}
-            />
-          ) : null}
         </View>
+
+        {/* Description + tracking info */}
         <ScrollView style={{ flex: 1, backgroundColor: C.background }} contentContainerStyle={{ padding: Spacing.lg, gap: Spacing.md }}>
           <Text style={{ fontSize: Typography.fontSizes.sm, color: C.textSecondary, lineHeight: 20, includeFontPadding: false } as any}>{video.description}</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>

@@ -6,7 +6,7 @@
  * - Invite new clients
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,10 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
+  Modal,
+  Alert,
 } from 'react-native';
+import { Audio } from 'expo-av';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -26,11 +29,15 @@ import { Colors, Typography, Spacing, Radius, Shadows } from '@/constants/theme'
 import {
   TherapistClient,
   ClientSummary,
+  TherapistNote,
   getMyClients,
   inviteClient,
   removeClient,
   getClientSummary,
   updateClientNotificationsEnabled,
+  getClientNotes,
+  saveClientNote,
+  deleteClientNote,
 } from '@/services/therapist';
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
@@ -699,14 +706,11 @@ function ClientDetailView({ summary, onBack }: { summary: ClientSummary; onBack:
           </View>
         ) : null}
 
-        {/* Therapist notes */}
-        {client.notes ? (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Your notes</Text>
-            <View style={styles.notesCard}>
-              <Text style={styles.notesText}>{client.notes}</Text>
-            </View>
-          </View>
+        {/* Therapist session notes */}
+        {client.client_id ? (
+          <TherapistNotesSection
+            summary={summary}
+          />
         ) : null}
 
         {/* Recent entries */}
@@ -759,6 +763,449 @@ function ClientDetailView({ summary, onBack }: { summary: ClientSummary; onBack:
     </SafeAreaView>
   );
 }
+
+// ─── Therapist Notes Section ────────────────────────────────────────────────────
+function TherapistNotesSection({ summary }: { summary: ClientSummary }) {
+  const { user } = useAuth();
+  const { showAlert } = useAlert();
+  const [notes, setNotes] = useState<TherapistNote[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showCompose, setShowCompose] = useState(false);
+  // Collapsed months: key = "YYYY-MM"
+  const [collapsedMonths, setCollapsedMonths] = useState<Set<string>>(new Set());
+  // Collapsed individual notes
+  const [collapsedNotes, setCollapsedNotes] = useState<Set<string>>(new Set());
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  // Compose state
+  const [noteText, setNoteText] = useState('');
+  const [saving, setSaving] = useState(false);
+  // Voice recording
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+
+  const loadNotes = useCallback(async () => {
+    if (!user?.id || !summary.client.client_id) { setLoading(false); return; }
+    try {
+      const data = await getClientNotes(user.id, summary.client.client_id);
+      setNotes(data);
+    } catch {}
+    setLoading(false);
+  }, [user?.id, summary.client.client_id]);
+
+  useEffect(() => { loadNotes(); }, [loadNotes]);
+
+  // Group notes by YYYY-MM, then by date
+  const grouped = React.useMemo(() => {
+    const byMonth: Record<string, Record<string, TherapistNote[]>> = {};
+    notes.forEach(n => {
+      const month = n.note_date.substring(0, 7);
+      const day = n.note_date;
+      if (!byMonth[month]) byMonth[month] = {};
+      if (!byMonth[month][day]) byMonth[month][day] = [];
+      byMonth[month][day].push(n);
+    });
+    return byMonth;
+  }, [notes]);
+
+  const monthKeys = Object.keys(grouped).sort().reverse();
+
+  const toggleMonth = (m: string) => {
+    setCollapsedMonths(prev => {
+      const next = new Set(prev);
+      if (next.has(m)) next.delete(m); else next.add(m);
+      return next;
+    });
+  };
+
+  const toggleNote = (id: string) => {
+    setCollapsedNotes(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const startRecording = async () => {
+    try {
+      if (Platform.OS !== 'web') {
+        const { status } = await Audio.requestPermissionsAsync();
+        if (status !== 'granted') {
+          showAlert('Permission required', 'Microphone access is needed to record notes.');
+          return;
+        }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      }
+      const { recording: rec } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      recordingRef.current = rec;
+      setRecording(rec);
+      setIsRecording(true);
+    } catch (e: any) {
+      showAlert('Recording failed', e.message ?? 'Could not start recording.');
+    }
+  };
+
+  const stopRecording = async () => {
+    if (!recordingRef.current) return;
+    setIsRecording(false);
+    setTranscribing(true);
+    try {
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+      setRecording(null);
+
+      if (!uri) { setTranscribing(false); return; }
+
+      // Transcribe via edge function
+      const supabase = getSupabaseClient();
+      let base64: string | null = null;
+      if (Platform.OS !== 'web') {
+        try {
+          const FileSystem = require('expo-file-system');
+          base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+        } catch {}
+      }
+
+      if (base64) {
+        const { data, error } = await supabase.functions.invoke('transcribe-voice', {
+          body: { audioBase64: base64, mimeType: 'audio/m4a' },
+        });
+        if (!error && data?.transcript) {
+          const t = data.transcript as string;
+          setNoteText(prev => (prev ? prev + ' ' + t : t));
+        }
+      }
+    } catch {}
+    setTranscribing(false);
+  };
+
+  const handleSave = async () => {
+    if (!user?.id || !summary.client.client_id || !noteText.trim()) return;
+    setSaving(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      if (editingId) {
+        await saveClientNote(
+          user.id, summary.client.client_id, summary.client.id,
+          noteText.trim(), today, null, null, editingId
+        );
+        setEditingId(null);
+      } else {
+        await saveClientNote(
+          user.id, summary.client.client_id, summary.client.id,
+          noteText.trim(), today
+        );
+      }
+      setNoteText('');
+      setShowCompose(false);
+      await loadNotes();
+    } catch (e: any) {
+      showAlert('Error', e.message ?? 'Could not save note.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = (noteId: string) => {
+    showAlert('Delete note?', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        if (!user?.id) return;
+        await deleteClientNote(user.id, noteId);
+        await loadNotes();
+      }},
+    ]);
+  };
+
+  const handleEdit = (note: TherapistNote) => {
+    setEditingId(note.id);
+    setNoteText(note.note_text);
+    setShowCompose(true);
+  };
+
+  const formatMonthLabel = (m: string) => {
+    const [y, mo] = m.split('-');
+    return new Date(parseInt(y), parseInt(mo) - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  };
+
+  const formatDayLabel = (d: string) => {
+    return new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  };
+
+  const formatTime = (iso: string) => {
+    return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+
+  return (
+    <View style={[styles.section, { gap: Spacing.md }]}>
+      {/* Section header */}
+      <View style={[styles.sectionRow, { justifyContent: 'space-between' }]}>
+        <View style={styles.sectionRow}>
+          <MaterialIcons name="notes" size={14} color={Colors.secondary} />
+          <Text style={[styles.sectionTitle, { color: Colors.secondary }]}>Session Notes</Text>
+          {notes.length > 0 ? (
+            <View style={[styles.overdueChip, { backgroundColor: Colors.secondary + '20' }]}>
+              <Text style={[styles.overdueChipText, { color: Colors.secondary }]}>{notes.length}</Text>
+            </View>
+          ) : null}
+        </View>
+        <Pressable
+          onPress={() => { setEditingId(null); setNoteText(''); setShowCompose(!showCompose); }}
+          style={({ pressed }) => [tnStyles.addBtn, pressed && { opacity: 0.7 }]}
+        >
+          <MaterialIcons name={showCompose ? 'close' : 'add'} size={16} color={Colors.secondary} />
+          <Text style={tnStyles.addBtnText}>{showCompose ? 'Cancel' : 'Add Note'}</Text>
+        </Pressable>
+      </View>
+
+      {/* Compose panel */}
+      {showCompose ? (
+        <View style={tnStyles.composeCard}>
+          <View style={tnStyles.composeHeader}>
+            <MaterialIcons name="edit" size={14} color={Colors.secondary} />
+            <Text style={tnStyles.composeTitle}>
+              {editingId ? 'Edit note' : `Note — ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`}
+            </Text>
+          </View>
+          <TextInput
+            style={tnStyles.textarea}
+            multiline
+            numberOfLines={5}
+            placeholder="Session observations, treatment notes, progress..."
+            placeholderTextColor={Colors.textMuted}
+            value={noteText}
+            onChangeText={setNoteText}
+            textAlignVertical="top"
+            autoCapitalize="sentences"
+          />
+          {/* Voice controls */}
+          <View style={tnStyles.voiceRow}>
+            {Platform.OS !== 'web' ? (
+              isRecording ? (
+                <Pressable
+                  onPress={stopRecording}
+                  style={({ pressed }) => [tnStyles.voiceBtn, { backgroundColor: Colors.error + '20', borderColor: Colors.error }, pressed && { opacity: 0.7 }]}
+                >
+                  <View style={tnStyles.recordingDot} />
+                  <Text style={[tnStyles.voiceBtnText, { color: Colors.error }]}>Stop Recording</Text>
+                </Pressable>
+              ) : transcribing ? (
+                <View style={[tnStyles.voiceBtn, { borderColor: Colors.primary + '40' }]}>
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                  <Text style={[tnStyles.voiceBtnText, { color: Colors.primary }]}>Transcribing...</Text>
+                </View>
+              ) : (
+                <Pressable
+                  onPress={startRecording}
+                  style={({ pressed }) => [tnStyles.voiceBtn, { backgroundColor: Colors.primary + '12', borderColor: Colors.primary + '40' }, pressed && { opacity: 0.7 }]}
+                >
+                  <MaterialIcons name="mic" size={14} color={Colors.primary} />
+                  <Text style={[tnStyles.voiceBtnText, { color: Colors.primary }]}>Record & Transcribe</Text>
+                </Pressable>
+              )
+            ) : (
+              <Text style={{ fontSize: 10, color: Colors.textMuted, includeFontPadding: false } as any}>Voice recording available on mobile app</Text>
+            )}
+            <Pressable
+              onPress={handleSave}
+              disabled={saving || !noteText.trim()}
+              style={({ pressed }) => [tnStyles.saveBtn, (!noteText.trim() || saving) && { opacity: 0.45 }, pressed && { opacity: 0.8 }]}
+            >
+              {saving ? (
+                <ActivityIndicator size="small" color="#08091A" />
+              ) : (
+                <>
+                  <MaterialIcons name="save" size={14} color="#08091A" />
+                  <Text style={tnStyles.saveBtnText}>Save Note</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Notes grouped by month > day */}
+      {loading ? (
+        <ActivityIndicator size="small" color={Colors.secondary} />
+      ) : monthKeys.length === 0 ? (
+        <View style={tnStyles.emptyNotes}>
+          <MaterialIcons name="sticky-note-2" size={24} color={Colors.textMuted} />
+          <Text style={tnStyles.emptyNotesText}>No session notes yet. Tap "Add Note" to create the first one.</Text>
+        </View>
+      ) : (
+        monthKeys.map(month => {
+          const isMonthCollapsed = collapsedMonths.has(month);
+          const dayKeys = Object.keys(grouped[month]).sort().reverse();
+          const noteCount = dayKeys.reduce((acc, d) => acc + grouped[month][d].length, 0);
+          return (
+            <View key={month} style={tnStyles.monthBlock}>
+              {/* Month header */}
+              <Pressable
+                onPress={() => toggleMonth(month)}
+                style={({ pressed }) => [tnStyles.monthHeader, pressed && { opacity: 0.75 }]}
+              >
+                <MaterialIcons
+                  name={isMonthCollapsed ? 'keyboard-arrow-right' : 'keyboard-arrow-down'}
+                  size={18}
+                  color={Colors.secondary}
+                />
+                <Text style={tnStyles.monthLabel}>{formatMonthLabel(month)}</Text>
+                <View style={tnStyles.monthCount}>
+                  <Text style={tnStyles.monthCountText}>{noteCount} note{noteCount !== 1 ? 's' : ''}</Text>
+                </View>
+              </Pressable>
+
+              {/* Days */}
+              {!isMonthCollapsed ? dayKeys.map(day => (
+                <View key={day} style={tnStyles.dayBlock}>
+                  <View style={tnStyles.dayHeader}>
+                    <View style={tnStyles.dayDot} />
+                    <Text style={tnStyles.dayLabel}>{formatDayLabel(day)}</Text>
+                  </View>
+                  {grouped[month][day].map(note => {
+                    const isNoteCollapsed = collapsedNotes.has(note.id);
+                    return (
+                      <View key={note.id} style={tnStyles.noteCard}>
+                        {/* Note header row */}
+                        <Pressable
+                          onPress={() => toggleNote(note.id)}
+                          style={({ pressed }) => [tnStyles.noteHeader, pressed && { opacity: 0.75 }]}
+                        >
+                          <MaterialIcons
+                            name={isNoteCollapsed ? 'keyboard-arrow-right' : 'keyboard-arrow-down'}
+                            size={14}
+                            color={Colors.textMuted}
+                          />
+                          <Text style={tnStyles.noteTime}>{formatTime(note.created_at)}</Text>
+                          <Text
+                            style={tnStyles.notePreview}
+                            numberOfLines={1}
+                          >
+                            {note.note_text}
+                          </Text>
+                          {/* Actions */}
+                          <Pressable
+                            onPress={() => handleEdit(note)}
+                            hitSlop={8}
+                            style={({ pressed }) => [tnStyles.noteActionBtn, pressed && { opacity: 0.6 }]}
+                          >
+                            <MaterialIcons name="edit" size={13} color={Colors.textMuted} />
+                          </Pressable>
+                          <Pressable
+                            onPress={() => handleDelete(note.id)}
+                            hitSlop={8}
+                            style={({ pressed }) => [tnStyles.noteActionBtn, pressed && { opacity: 0.6 }]}
+                          >
+                            <MaterialIcons name="delete-outline" size={13} color={Colors.error + 'CC'} />
+                          </Pressable>
+                        </Pressable>
+                        {/* Expanded content */}
+                        {!isNoteCollapsed ? (
+                          <View style={tnStyles.noteBody}>
+                            <Text style={tnStyles.noteText}>{note.note_text}</Text>
+                            {note.transcript ? (
+                              <View style={tnStyles.transcriptBadge}>
+                                <MaterialIcons name="mic" size={11} color={Colors.primary} />
+                                <Text style={tnStyles.transcriptText}>Voice transcribed</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+              )) : null}
+            </View>
+          );
+        })
+      )}
+    </View>
+  );
+}
+
+const tnStyles = StyleSheet.create({
+  addBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.secondary + '15', borderRadius: Radius.full,
+    paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: Colors.secondary + '40',
+  },
+  addBtnText: { fontSize: 11, fontWeight: '700', color: Colors.secondary, includeFontPadding: false },
+  composeCard: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.xl, borderWidth: 1.5,
+    borderColor: Colors.secondary + '40', overflow: 'hidden',
+  },
+  composeHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.md, paddingBottom: Spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: Colors.border, backgroundColor: Colors.secondary + '08',
+  },
+  composeTitle: { fontSize: Typography.fontSizes.xs, fontWeight: '700', color: Colors.secondary, includeFontPadding: false },
+  textarea: {
+    minHeight: 100, backgroundColor: 'transparent', color: Colors.textPrimary,
+    fontSize: Typography.fontSizes.sm, lineHeight: Typography.fontSizes.sm * 1.6,
+    padding: Spacing.md, textAlignVertical: 'top',
+  },
+  voiceRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    padding: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.border,
+  },
+  voiceBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: Radius.lg,
+    paddingHorizontal: 10, paddingVertical: 7, borderWidth: 1,
+  },
+  voiceBtnText: { fontSize: 11, fontWeight: '700', includeFontPadding: false },
+  recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.error },
+  saveBtn: {
+    marginLeft: 'auto' as any, flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: Colors.secondary, borderRadius: Radius.lg,
+    paddingHorizontal: 14, paddingVertical: 8,
+  },
+  saveBtnText: { fontSize: 12, fontWeight: '800', color: '#08091A', includeFontPadding: false },
+  emptyNotes: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.xl,
+    borderWidth: 1, borderColor: Colors.border, padding: Spacing.lg,
+    alignItems: 'center', gap: Spacing.sm,
+  },
+  emptyNotesText: { fontSize: Typography.fontSizes.xs, color: Colors.textMuted, textAlign: 'center', lineHeight: 18, includeFontPadding: false },
+  monthBlock: { gap: 2 },
+  monthHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+  },
+  monthLabel: { fontSize: Typography.fontSizes.sm, fontWeight: '800', color: Colors.textPrimary, flex: 1, includeFontPadding: false },
+  monthCount: { backgroundColor: Colors.secondary + '20', borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 3 },
+  monthCountText: { fontSize: 10, fontWeight: '700', color: Colors.secondary, includeFontPadding: false },
+  dayBlock: { paddingLeft: Spacing.md, gap: Spacing.sm, marginBottom: Spacing.sm },
+  dayHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: 3 },
+  dayDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.secondary + '80', flexShrink: 0 },
+  dayLabel: { fontSize: Typography.fontSizes.xs, fontWeight: '700', color: Colors.textSecondary, includeFontPadding: false },
+  noteCard: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, borderWidth: 1,
+    borderColor: Colors.border, overflow: 'hidden',
+  },
+  noteHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 8,
+  },
+  noteTime: { fontSize: 10, color: Colors.textMuted, fontWeight: '600', width: 48, includeFontPadding: false },
+  notePreview: { flex: 1, fontSize: 12, color: Colors.textSecondary, includeFontPadding: false },
+  noteActionBtn: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center' },
+  noteBody: { paddingHorizontal: 14, paddingBottom: 12, paddingTop: 2, borderTopWidth: 1, borderTopColor: Colors.border },
+  noteText: { fontSize: Typography.fontSizes.sm, color: Colors.textPrimary, lineHeight: Typography.fontSizes.sm * 1.65, includeFontPadding: false },
+  transcriptBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8,
+    backgroundColor: Colors.primarySoft, borderRadius: Radius.full,
+    paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start',
+  },
+  transcriptText: { fontSize: 10, color: Colors.primary, fontWeight: '600', includeFontPadding: false },
+});
 
 // ─── Intake sub-components ────────────────────────────────────────────────────────
 function IntakeMeter({ label, score, max, color, sublabel }: { label: string; score: number; max: number; color: string; sublabel: string }) {

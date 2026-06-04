@@ -108,6 +108,7 @@ function makeProfileStyles(C: typeof DarkColors, isDark = true) {
     tierCta: { margin: Spacing.md, marginTop: Spacing.sm, borderRadius: Radius.lg, paddingVertical: 12, alignItems: 'center', borderWidth: 1.5 },
     tierCtaText: { fontSize: Typography.fontSizes.sm, fontWeight: '800', includeFontPadding: false },
     premiumNote: { fontSize: Typography.fontSizes.xs, color: C.textMuted, textAlign: 'center', includeFontPadding: false },
+    iapDisclosure: { fontSize: 10, color: C.textMuted, textAlign: 'center', lineHeight: 15, paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm, includeFontPadding: false },
     premiumBadge: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: C.primarySoft, borderRadius: Radius.lg, padding: Spacing.md, marginBottom: Spacing.xl },
     premiumBadgeText: { fontSize: Typography.fontSizes.sm, color: C.primary, fontWeight: Typography.fontWeights.medium, includeFontPadding: false },
     manageBtn: { paddingHorizontal: Spacing.md, paddingVertical: 6, borderRadius: Radius.full, backgroundColor: C.primary + '25', borderWidth: 1, borderColor: C.primary + '50' },
@@ -293,6 +294,9 @@ export default function ProfileScreen() {
   const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
   const [generatingPeriod, setGeneratingPeriod] = useState<InsightPeriod | null>(null);
+  const [aiConsentGiven, setAiConsentGiven] = useState<boolean | null>(null);
+  const [showAiConsentModal, setShowAiConsentModal] = useState(false);
+  const [pendingReportPeriod, setPendingReportPeriod] = useState<InsightPeriod | null>(null);
   const [expandedReportId, setExpandedReportId] = useState<string | null>(null);
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(new Set());
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
@@ -360,6 +364,13 @@ export default function ProfileScreen() {
 
   useEffect(() => { loadReports(); }, [loadReports]);
 
+  // Load AI consent state once
+  useEffect(() => {
+    AsyncStorage.getItem('ai_consent_given').then(val => {
+      setAiConsentGiven(val === 'true');
+    }).catch(() => setAiConsentGiven(false));
+  }, []);
+
   const dismissTherapistBanner = async () => {
     setShowTherapistBanner(false);
     await AsyncStorage.setItem('therapist_banner_dismissed', '1');
@@ -392,6 +403,16 @@ export default function ProfileScreen() {
   const handleGenerateReport = async (period: InsightPeriod) => {
     if (!isProOrTherapist) { showAlert('Pro feature', 'Upgrade to Pro to generate AI Wellness Reports.'); return; }
     if (handleProfilePrompt()) return;
+    // Check AI consent — show modal if not yet granted
+    if (!aiConsentGiven) {
+      setPendingReportPeriod(period);
+      setShowAiConsentModal(true);
+      return;
+    }
+    if (aiConsentGiven === false) {
+      showAlert('AI Reports Disabled', 'You have not given consent to send data to AI services. Enable AI Reports in Settings to generate reports.');
+      return;
+    }
     setGeneratingPeriod(period);
     try {
       const days = period === 'daily' ? 1 : period === 'weekly' ? 7 : 30;
@@ -448,29 +469,49 @@ export default function ProfileScreen() {
   }, []);
 
   const handleUpgrade = async (priceId: string, planName: string) => {
-    setCheckingOut(true);
-    try {
-      if (Platform.OS !== 'web') {
-        // Native: use RevenueCat IAP
-        const pkgKey = planName.toLowerCase().includes('therapist') ? rcPackages.therapistPro : rcPackages.pro;
-        if (pkgKey) {
-          const { success, tier, error } = await purchaseRevenueCat(pkgKey);
-          if (error) showAlert('Purchase failed', error);
-          if (success) {
-            await refreshSubscription();
-            showAlert('Subscription activated!', 'Your 30-day free trial has started.');
-          }
-        } else {
-          // Offerings not loaded — fall back to Stripe web checkout
-          const { error } = await startCheckout(priceId);
-          if (error) showAlert('Checkout failed', error);
-          await refreshSubscription();
-        }
-      } else {
-        // Web: use Stripe
+    if (Platform.OS === 'web') {
+      // Web: Stripe checkout
+      setCheckingOut(true);
+      try {
         const { error } = await startCheckout(priceId);
         if (error) showAlert('Checkout failed', error);
         await refreshSubscription();
+      } finally {
+        setCheckingOut(false);
+      }
+      return;
+    }
+
+    // iOS / Android: Apple/Google IAP via RevenueCat ONLY
+    // Stripe checkout must never be shown on native builds (App Store rule 3.1.1)
+    setCheckingOut(true);
+    try {
+      const isTherapist = planName.toLowerCase().includes('therapist');
+      let pkg = isTherapist ? rcPackages.therapistPro : rcPackages.pro;
+
+      // If offerings not yet loaded, do a fresh fetch
+      if (!pkg) {
+        const freshPkgs = await getRevenueCatOfferings();
+        setRcPackages(freshPkgs);
+        pkg = isTherapist ? freshPkgs.therapistPro : freshPkgs.pro;
+      }
+
+      if (!pkg) {
+        showAlert(
+          'Store unavailable',
+          'Could not connect to the App Store. Please check your internet connection and try again.',
+        );
+        return;
+      }
+
+      const { success, tier, error } = await purchaseRevenueCat(pkg);
+      if (error) {
+        showAlert('Purchase failed', error);
+        return;
+      }
+      if (success) {
+        await refreshSubscription();
+        showAlert('Subscription activated!', 'Your 30-day free trial has started.');
       }
     } finally {
       setCheckingOut(false);
@@ -495,6 +536,16 @@ export default function ProfileScreen() {
   };
 
   const handleManageSubscription = async () => {
+    if (Platform.OS !== 'web') {
+      // iOS/Android: NEVER open Stripe portal (App Store rule 3.1.1)
+      // Direct users to OS subscription settings exclusively
+      const url = Platform.OS === 'ios'
+        ? 'https://apps.apple.com/account/subscriptions'
+        : 'https://play.google.com/store/account/subscriptions';
+      Linking.openURL(url).catch(() => {});
+      return;
+    }
+    // Web only: Stripe customer portal
     const { error } = await openCustomerPortal();
     if (error) showAlert('Error', error);
     await refreshSubscription();
@@ -563,8 +614,68 @@ export default function ProfileScreen() {
     ]);
   };
 
+  const handleAiConsentAllow = async () => {
+    await AsyncStorage.setItem('ai_consent_given', 'true');
+    setAiConsentGiven(true);
+    setShowAiConsentModal(false);
+    if (pendingReportPeriod) {
+      setPendingReportPeriod(null);
+      // Trigger the report with consent now granted
+      handleGenerateReport(pendingReportPeriod);
+    }
+  };
+
+  const handleAiConsentDecline = async () => {
+    await AsyncStorage.setItem('ai_consent_given', 'false');
+    setAiConsentGiven(false);
+    setShowAiConsentModal(false);
+    setPendingReportPeriod(null);
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      {/* AI Data Consent Modal — shown before first AI report generation */}
+      {showAiConsentModal ? (
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.72)', zIndex: 999, alignItems: 'center', justifyContent: 'center', padding: Spacing.lg }}>
+          <View style={{ backgroundColor: C.surfaceElevated, borderRadius: Radius.xl, padding: Spacing.xl, borderWidth: 1.5, borderColor: C.secondary + '50', maxWidth: 420, width: '100%', gap: Spacing.lg }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
+              <View style={{ width: 44, height: 44, borderRadius: Radius.lg, backgroundColor: C.secondary + '20', alignItems: 'center', justifyContent: 'center' }}>
+                <MaterialIcons name="psychology" size={22} color={C.secondary} />
+              </View>
+              <Text style={{ fontSize: Typography.fontSizes.lg, fontWeight: '800', color: C.textPrimary, flex: 1, includeFontPadding: false } as any}>AI-Powered Insights</Text>
+            </View>
+            <Text style={{ fontSize: Typography.fontSizes.sm, color: C.textSecondary, lineHeight: Typography.fontSizes.sm * 1.6, includeFontPadding: false } as any}>
+              {'To generate your personalised mood report, MyMoodMapp sends your mood scores, tags, and journal entries to Anthropic\'s Claude AI. Your data is processed securely and not used to train AI models. No personally identifiable information (name or email) is shared.'}
+            </Text>
+            <View style={{ backgroundColor: C.background, borderRadius: Radius.lg, padding: Spacing.md, gap: 6, borderWidth: 1, borderColor: C.border }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <MaterialIcons name="check-circle" size={13} color={C.success} />
+                <Text style={{ fontSize: Typography.fontSizes.xs, color: C.textSecondary, includeFontPadding: false } as any}>Mood scores, tags, and journal text only</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <MaterialIcons name="block" size={13} color={C.success} />
+                <Text style={{ fontSize: Typography.fontSizes.xs, color: C.textSecondary, includeFontPadding: false } as any}>Your name and email are never shared</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <MaterialIcons name="security" size={13} color={C.success} />
+                <Text style={{ fontSize: Typography.fontSizes.xs, color: C.textSecondary, includeFontPadding: false } as any}>Data not used to train AI models</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <MaterialIcons name="info" size={13} color={C.secondary} />
+                <Text style={{ fontSize: Typography.fontSizes.xs, color: C.textMuted, includeFontPadding: false } as any}>Processed by Anthropic (anthropic.com/privacy)</Text>
+              </View>
+            </View>
+            <View style={{ flexDirection: 'row', gap: Spacing.md }}>
+              <Pressable onPress={handleAiConsentDecline} style={({ pressed }) => [{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 13, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: C.border }, pressed && { opacity: 0.7 }]}>
+                <Text style={{ fontSize: Typography.fontSizes.sm, fontWeight: '600', color: C.textMuted, includeFontPadding: false } as any}>No Thanks</Text>
+              </Pressable>
+              <Pressable onPress={handleAiConsentAllow} style={({ pressed }) => [{ flex: 2, alignItems: 'center', justifyContent: 'center', paddingVertical: 13, borderRadius: Radius.lg, backgroundColor: C.secondary }, pressed && { opacity: 0.85 }]}>
+                <Text style={{ fontSize: Typography.fontSizes.sm, fontWeight: '800', color: '#fff', includeFontPadding: false } as any}>Allow AI Reports</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      ) : null}
       <ScrollView contentContainerStyle={[styles.scroll, { alignItems: 'stretch' }]} showsVerticalScrollIndicator={false}>
       <WebMaxWidth>
 
@@ -579,7 +690,7 @@ export default function ProfileScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.displayName}>{displayName ?? user?.username ?? user?.email?.split('@')[0] ?? 'User'}</Text>
-            <Text style={styles.emailText}>{user?.email ?? ''}</Text>
+            <Text style={styles.emailText} numberOfLines={1} ellipsizeMode="tail">{user?.email ?? ''}</Text>
           </View>
           <View style={styles.tierBadge}>
             {isOwner ? (
@@ -978,7 +1089,12 @@ export default function ProfileScreen() {
             <View style={styles.tierCompareBlock}>
               <View style={[styles.tierCompareHeader, { borderColor: C.primary + '50', backgroundColor: C.primarySoft }]}>
                 <MaterialIcons name="star" size={14} color={C.primary} />
-                <Text style={[styles.tierCompareTitle, { color: C.primary }]}>Pro — $3.99/mo</Text>
+                <Text style={[styles.tierCompareTitle, { color: C.primary }]}>
+                  {'Pro — '}
+                  {Platform.OS !== 'web' && rcPackages.pro
+                    ? rcPackages.pro.product.priceString + '/mo'
+                    : '$3.99/mo'}
+                </Text>
               </View>
               {['Unlimited mood history & AI insights', 'Export mood data & wellness reports', 'Unlimited accountability buddies (free: 1 buddy included)', 'Advanced fitness × mood correlations', 'Predictive alerts & deeper pattern reports'].map(f => (
                 <View key={f} style={styles.premiumFeatureRow}><MaterialIcons name="check-circle" size={14} color={C.success} /><Text style={styles.premiumFeatureText}>{f}</Text></View>
@@ -990,11 +1106,23 @@ export default function ProfileScreen() {
               <Pressable onPress={() => handleUpgrade(SUBSCRIPTION_PLANS.pro.priceId, 'Pro')} disabled={checkingOut} style={({ pressed }) => [styles.tierCta, { borderColor: C.primary, backgroundColor: C.primary }, pressed && { opacity: 0.85 }, checkingOut && { opacity: 0.6 }]}>
                 {checkingOut ? <ActivityIndicator size="small" color="#fff" /> : <Text style={[styles.tierCtaText, { color: '#fff' }]}>Start 30-day free trial →</Text>}
               </Pressable>
+              {Platform.OS === 'ios' ? (
+                <Text style={styles.iapDisclosure}>
+                  {'Free for 30 days, then '}
+                  {rcPackages.pro ? rcPackages.pro.product.priceString : '$3.99'}
+                  {'/month. Payment charged to your Apple ID at confirmation. Subscription auto-renews unless cancelled at least 24 hours before the end of the current period. Manage or cancel in Settings → Apple ID → Subscriptions.'}
+                </Text>
+              ) : null}
             </View>
             <View style={[styles.tierCompareBlock, { marginTop: Spacing.md }]}>
               <View style={[styles.tierCompareHeader, { borderColor: C.secondary + '50', backgroundColor: C.secondarySoft }]}>
                 <MaterialIcons name="psychology" size={14} color={C.secondary} />
-                <Text style={[styles.tierCompareTitle, { color: C.secondary }]}>Therapist Pro — $9.99/mo</Text>
+                <Text style={[styles.tierCompareTitle, { color: C.secondary }]}>
+                  {'Therapist Pro — '}
+                  {Platform.OS !== 'web' && rcPackages.therapistPro
+                    ? rcPackages.therapistPro.product.priceString + '/mo'
+                    : '$9.99/mo'}
+                </Text>
               </View>
               <Text style={styles.tierCompareDesc}>Everything in Pro, built for mental health professionals.</Text>
               {['Act as accountability buddy to unlimited clients', 'Full client dashboard with 14-day mood trend', 'Unlimited client slots with invite-link onboarding', 'Private therapist notes per client', 'All Pro features included'].map(f => (
@@ -1007,8 +1135,19 @@ export default function ProfileScreen() {
               <Pressable onPress={() => handleUpgrade(SUBSCRIPTION_PLANS.therapist_pro.priceId, 'Therapist Pro')} disabled={checkingOut} style={({ pressed }) => [styles.tierCta, { borderColor: C.secondary, backgroundColor: C.secondary }, pressed && { opacity: 0.85 }, checkingOut && { opacity: 0.6 }]}>
                 {checkingOut ? <ActivityIndicator size="small" color="#fff" /> : <Text style={[styles.tierCtaText, { color: '#fff' }]}>Start 30-day free trial →</Text>}
               </Pressable>
+              {Platform.OS === 'ios' ? (
+                <Text style={styles.iapDisclosure}>
+                  {'Free for 30 days, then '}
+                  {rcPackages.therapistPro ? rcPackages.therapistPro.product.priceString : '$9.99'}
+                  {'/month. Payment charged to your Apple ID at confirmation. Subscription auto-renews unless cancelled at least 24 hours before the end of the current period. Manage or cancel in Settings → Apple ID → Subscriptions.'}
+                </Text>
+              ) : null}
             </View>
-            <Text style={styles.premiumNote}>{Platform.OS === 'web' ? 'No credit card required. Cancel before day 31 and pay nothing.' : 'Free trial starts immediately. Cancel anytime in your Apple ID subscription settings before day 31.'}</Text>
+            <Text style={styles.premiumNote}>
+              {Platform.OS === 'web'
+                ? 'No credit card required. Cancel before day 31 and pay nothing.'
+                : 'Subscription managed by Apple. Cancel anytime in Settings → Apple ID → Subscriptions before day 31.'}
+            </Text>
             {Platform.OS !== 'web' ? (
               <Pressable onPress={handleRestorePurchases} disabled={restoringPurchases} style={({ pressed }) => [{ alignSelf: 'center', marginTop: 4 }, pressed && { opacity: 0.6 }]}>
                 {restoringPurchases ? <ActivityIndicator size="small" color={C.textMuted} /> : <Text style={[styles.premiumNote, { textDecorationLine: 'underline' }]}>Restore purchases</Text>}
@@ -1023,38 +1162,12 @@ export default function ProfileScreen() {
               {subscriptionEnd ? <Text style={[styles.premiumBadgeText, { fontSize: 10, opacity: 0.7, marginTop: 2 }]}>Renews {new Date(subscriptionEnd).toLocaleDateString()}</Text> : null}
             </View>
             <Pressable onPress={handleManageSubscription} style={({ pressed }) => [styles.manageBtn, pressed && { opacity: 0.7 }]}>
-              <Text style={styles.manageBtnText}>Manage</Text>
+              <Text style={styles.manageBtnText}>
+                {Platform.OS === 'ios' ? 'Manage in Settings' : Platform.OS === 'android' ? 'Manage in Google Play' : 'Manage'}
+              </Text>
             </Pressable>
           </View>
         )}
-
-        {/* Units */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Units</Text>
-          <View style={styles.settingsCard}>
-            <View style={styles.settingRow}>
-              <View style={{ flex: 1, gap: 2 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <MaterialIcons name="thermostat" size={18} color={C.secondary} />
-                  <Text style={styles.settingLabel}>Temperature</Text>
-                </View>
-                <Text style={styles.settingDesc}>Used in weather context on Mapp tab</Text>
-              </View>
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                {(['C', 'F'] as const).map(u => (
-                  <Pressable key={u} onPress={() => setTempUnit(u)}
-                    style={({ pressed }) => [{
-                      paddingHorizontal: 14, paddingVertical: 6, borderRadius: Radius.full,
-                      backgroundColor: tempUnit === u ? C.secondary : C.surfaceElevated,
-                      borderWidth: 1.5, borderColor: tempUnit === u ? C.secondary : C.border,
-                    }, pressed && { opacity: 0.75 }]}>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: tempUnit === u ? '#fff' : C.textMuted, includeFontPadding: false } as any}>°{u}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          </View>
-        </View>
 
         {/* Appearance */}
         <View style={styles.section}>
@@ -1076,10 +1189,7 @@ export default function ProfileScreen() {
         </View>
 
         {/* Reminders */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Reminders</Text>
-          <NotificationScheduler />
-        </View>
+        <RemindersWidget C={C} styles={styles} />
 
         {/* Privacy */}
         <View style={styles.section}>
@@ -1516,6 +1626,71 @@ function ReportSection({ icon, title, text, color }: { icon: string; title: stri
         <Text style={{ fontSize: Typography.fontSizes.xs, fontWeight: '700', color: C2.textPrimary, includeFontPadding: false, marginBottom: 2 }}>{title}</Text>
         <Text style={{ fontSize: Typography.fontSizes.xs, color: C2.textSecondary, lineHeight: Typography.fontSizes.xs * 1.6, includeFontPadding: false }}>{text}</Text>
       </View>
+    </View>
+  );
+}
+
+// ── Reminders Widget — collapsible, includes notification scheduler + Apple Watch section ──
+function RemindersWidget({ C, styles }: { C: typeof DarkColors; styles: ReturnType<typeof makeProfileStyles> }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const { isDark } = useTheme();
+  const G = getGlass(isDark);
+  return (
+    <View style={[{ borderRadius: Radius.xl, borderWidth: 1, borderColor: G.cardBorder, backgroundColor: G.cardBg, marginBottom: Spacing.xl, overflow: 'hidden' }]}>
+      <Pressable
+        onPress={() => setExpanded(e => !e)}
+        style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md, padding: Spacing.lg }, pressed && { opacity: 0.75 }]}
+      >
+        <View style={{ width: 36, height: 36, borderRadius: Radius.md, backgroundColor: C.primary + '18', alignItems: 'center', justifyContent: 'center' }}>
+          <MaterialIcons name="notifications" size={18} color={C.primary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: Typography.fontSizes.md, fontWeight: '700', color: C.textPrimary, includeFontPadding: false } as any}>Reminders</Text>
+          <Text style={{ fontSize: Typography.fontSizes.xs, color: C.textMuted, includeFontPadding: false } as any}>Daily check-in alerts · Apple Watch logging</Text>
+        </View>
+        <MaterialIcons name={expanded ? 'expand-less' : 'expand-more'} size={22} color={C.textMuted} />
+      </Pressable>
+      {expanded ? (
+        <View style={{ borderTopWidth: 1, borderTopColor: G.cardBorder, padding: Spacing.lg, gap: Spacing.lg }}>
+          {/* Notification Scheduler */}
+          <NotificationScheduler />
+          {/* Apple Watch section */}
+          {Platform.OS !== 'web' ? (
+            <View style={{ gap: Spacing.md }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+                <MaterialIcons name="watch" size={16} color={C.secondary} />
+                <Text style={{ fontSize: Typography.fontSizes.sm, fontWeight: '700', color: C.textPrimary, includeFontPadding: false } as any}>Log Directly from Apple Watch</Text>
+              </View>
+              <Text style={{ fontSize: Typography.fontSizes.xs, color: C.textSecondary, lineHeight: 18, includeFontPadding: false } as any}>
+                When a check-in reminder arrives on your Apple Watch, you can log your mood instantly without opening the app — just tap the notification action button.
+              </Text>
+              <View style={{ gap: Spacing.sm }}>
+                {[
+                  { emoji: '🟢', label: 'Great', desc: 'Logs score 90 instantly' },
+                  { emoji: '😊', label: 'Good', desc: 'Logs score 75 instantly' },
+                  { emoji: '😐', label: 'Fine', desc: 'Logs score 55 instantly' },
+                  { emoji: '😕', label: 'Not Great', desc: 'Logs score 40 instantly' },
+                  { emoji: '😞', label: 'Low', desc: 'Logs score 25 instantly' },
+                ].map((item, i) => (
+                  <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md, backgroundColor: C.surface, borderRadius: Radius.md, padding: Spacing.sm, borderWidth: 1, borderColor: C.border }}>
+                    <Text style={{ fontSize: 18 }}>{item.emoji}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: Typography.fontSizes.xs, fontWeight: '700', color: C.textPrimary, includeFontPadding: false } as any}>{item.label}</Text>
+                      <Text style={{ fontSize: 10, color: C.textMuted, includeFontPadding: false } as any}>{item.desc}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, backgroundColor: C.primarySoft, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: C.primary + '30' }}>
+                <MaterialIcons name="info-outline" size={14} color={C.primary} />
+                <Text style={{ flex: 1, fontSize: Typography.fontSizes.xs, color: C.primary, lineHeight: 17, includeFontPadding: false } as any}>
+                  Enable notifications and set a reminder time above. The watch action buttons appear automatically on your wrist when the notification arrives.
+                </Text>
+              </View>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }

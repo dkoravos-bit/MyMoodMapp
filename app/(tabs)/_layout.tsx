@@ -116,11 +116,14 @@ export default function TabLayout() {
           }}
         />
 
-        {/* 4 — Sound Lab (temporarily hidden — audio init crash investigation) */}
+        {/* 4 — Mood Lab */}
         <Tabs.Screen
           name="sound-lab"
           options={{
-            href: null,
+            title: 'Mood Lab',
+            tabBarIcon: ({ color, size }) => (
+              <MaterialIcons name="self-improvement" size={size} color={color} />
+            ),
           }}
         />
 

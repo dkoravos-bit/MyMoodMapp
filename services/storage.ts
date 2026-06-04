@@ -1,3 +1,4 @@
+// Storage service — AsyncStorage wrappers for all local persistent data
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEYS = {

@@ -142,12 +142,16 @@ export default function WeatherDetailScreen() {
             </View>
           </View>
 
-          {/* Metrics grid */}
+          {/* Metrics grid — 2×2 so each tile has enough room */}
           <View style={styles.metricsGrid}>
-            <MetricTile icon="wb-sunny" label="UV Index" value={getUVLabel(weather.uvIndex)} sub={`${weather.uvIndex} / 11`} color={getUVColor(weather.uvIndex)} />
-            <MetricTile icon="water-drop" label="Humidity" value={`${weather.humidity}%`} sub={weather.humidity > 70 ? 'High' : weather.humidity > 40 ? 'Comfortable' : 'Dry'} color={weather.humidity > 70 ? Colors.error : weather.humidity > 40 ? Colors.success : Colors.warning} />
-            <MetricTile icon="air" label="Wind" value={`${weather.windSpeed}`} sub="km/h" color={weather.windSpeed > 40 ? Colors.error : Colors.secondary} />
-            <MetricTile icon="compress" label="Pressure" value={`${weather.pressureHPA}`} sub="hPa" color={weather.pressureHPA < 1000 ? Colors.warning : Colors.primary} />
+            <View style={styles.metricsRow}>
+              <MetricTile icon="wb-sunny" label="UV Index" value={getUVLabel(weather.uvIndex)} sub={`${weather.uvIndex} / 11`} color={getUVColor(weather.uvIndex)} />
+              <MetricTile icon="water-drop" label="Humidity" value={`${weather.humidity}%`} sub={weather.humidity > 70 ? 'High' : weather.humidity > 40 ? 'Comfortable' : 'Dry'} color={weather.humidity > 70 ? Colors.error : weather.humidity > 40 ? Colors.success : Colors.warning} />
+            </View>
+            <View style={styles.metricsRow}>
+              <MetricTile icon="air" label="Wind Speed" value={`${weather.windSpeed} km/h`} sub={weather.windSpeed > 40 ? 'Strong' : weather.windSpeed > 20 ? 'Moderate' : 'Calm'} color={weather.windSpeed > 40 ? Colors.error : Colors.secondary} />
+              <MetricTile icon="compress" label="Pressure" value={`${weather.pressureHPA} hPa`} sub={weather.pressureHPA < 1000 ? 'Low' : weather.pressureHPA < 1020 ? 'Normal' : 'High'} color={weather.pressureHPA < 1000 ? Colors.warning : Colors.primary} />
+            </View>
           </View>
 
           {/* Science of weather & mood */}
@@ -251,10 +255,10 @@ function MetricTile({ icon, label, value, sub, color }: {
   );
 }
 const mtStyles = StyleSheet.create({
-  tile: { flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, padding: Spacing.md, alignItems: 'center', gap: 3, borderWidth: 1, borderColor: Colors.border },
-  value: { fontSize: Typography.fontSizes.md, fontWeight: '900', includeFontPadding: false },
-  sub: { fontSize: 9, color: Colors.textMuted, includeFontPadding: false },
-  label: { fontSize: 9, color: Colors.textSecondary, textAlign: 'center', includeFontPadding: false },
+  tile: { flex: 1, backgroundColor: Colors.surfaceElevated, borderRadius: Radius.lg, paddingVertical: Spacing.lg, paddingHorizontal: Spacing.md, alignItems: 'center', gap: 4, borderWidth: 1, borderColor: Colors.border, minHeight: 88 },
+  value: { fontSize: Typography.fontSizes.xl, fontWeight: '900', includeFontPadding: false, textAlign: 'center' },
+  sub: { fontSize: 11, color: Colors.textMuted, includeFontPadding: false, textAlign: 'center' },
+  label: { fontSize: 11, color: Colors.textSecondary, textAlign: 'center', fontWeight: '600', includeFontPadding: false },
 });
 
 function ScienceRow({ emoji, title, active, positiveText, negativeText }: {
@@ -405,7 +409,8 @@ const styles = StyleSheet.create({
   impactBox: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1 },
   impactReason: { flex: 1, fontSize: Typography.fontSizes.xs, lineHeight: Typography.fontSizes.xs * 1.6, includeFontPadding: false },
   // Metrics
-  metricsGrid: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.xl },
+  metricsGrid: { gap: Spacing.sm, marginBottom: Spacing.xl },
+  metricsRow: { flexDirection: 'row', gap: Spacing.sm },
   // Sections
   section: { marginBottom: Spacing.xl, gap: Spacing.md },
   sectionTitle: { fontSize: Typography.fontSizes.xs, fontWeight: '700', color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 1, includeFontPadding: false },

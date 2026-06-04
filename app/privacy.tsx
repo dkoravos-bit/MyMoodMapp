@@ -235,8 +235,29 @@ export default function PrivacyScreen() {
             <BodyText>
               MyMoodMapp uses artificial intelligence to analyze your mood logs and generate personalized insights, pattern reports, and forecasts. This processing occurs on Anthropic's Claude API infrastructure.
             </BodyText>
+            <SubHeading>What data is sent to AI</SubHeading>
+            <BulletList items={[
+              'Mood scores (numeric values only, no identity)',
+              'Context tags you select (e.g. exercise, sleep, social)',
+              'Journal text entries you choose to write',
+              'Aggregate fitness metrics (step counts, sleep hours — no device identifiers)',
+              'Environmental context (weather conditions, time of day)',
+            ]} />
+            <SubHeading>What is NEVER sent to AI</SubHeading>
+            <BulletList items={[
+              'Your name, email address, or any personally identifiable information',
+              'Your device ID or account ID',
+              'Payment information',
+              'Photos or audio recordings',
+            ]} color={C.success} />
+            <SubHeading>Who processes your data</SubHeading>
             <BodyText>
-              Data sent to the Claude API for analysis is processed under strict data minimization principles. We send only the minimum data required to generate your insight (e.g. anonymized mood scores and tags — never your name or email). Anthropic's data handling is governed by their Privacy Policy at anthropic.com/privacy.
+              AI analysis is performed by Anthropic, Inc. via the Claude API. Anthropic processes this data solely to generate your requested report and does not retain, share, or use your mood data to train AI models. Anthropic's data handling is governed by their Privacy Policy at{' '}
+              <Text style={{ color: C.primary, textDecorationLine: 'underline' }} onPress={() => Linking.openURL('https://www.anthropic.com/privacy')}>anthropic.com/privacy</Text>.
+            </BodyText>
+            <SubHeading>Your consent and control</SubHeading>
+            <BodyText>
+              Before your first AI wellness report is generated, the app will ask for your explicit consent to send data to Anthropic's Claude AI. You can decline and still use all other app features. You can change your preference at any time in Me {'>'} Settings {'>'} AI Reports.
             </BodyText>
             <AlertBox icon="info" color={C.secondary} text="AI-generated insights are interpretive tools to support self-awareness. They are not medical diagnoses, clinical assessments, or professional mental health advice." />
           </PolicySection>

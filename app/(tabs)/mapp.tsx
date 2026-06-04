@@ -174,7 +174,7 @@ function RadialCompass({
 // Direct Pollinations calls are unreliable (CORS, CDN instability, no storage).
 // The Edge Function: calls Pollinations → uploads to Supabase Storage → returns a
 // stable public CDN URL. Always use invokeArtFunction() — never call Pollinations directly.
-const ART_VER = 'v26'; // bump this when you need to force-clear all cached art
+const ART_VER = 'v27'; // bump this when you need to force-clear all cached art
 const TTL_MS  = 26 * 60 * 60 * 1000; // 26h
 
 // TODAY_DATE is intentionally a function so web SSR never freezes it at module-load time.
@@ -313,17 +313,53 @@ async function invokeArtFunction(params: Record<string, unknown>, cacheKey: stri
 
     // Get the current auth session to attach the Bearer token.
     // On web, the Supabase client persists the session in localStorage.
-    // getSession() reads it synchronously from storage — no network round-trip.
+    // On native, the template client stores the session in AsyncStorage/SecureStore.
+    // Multi-source fallback: getSession() → internal client state → AsyncStorage.
     let token = '';
     try {
+      // Primary: standard getSession()
       const { data: { session } } = await supabase.auth.getSession();
       token = session?.access_token ?? '';
     } catch (authErr) {
-      console.warn('[art] Auth token fetch failed:', authErr);
+      console.warn('[art] getSession() failed:', authErr);
+    }
+    // Fallback 1: read from internal client state
+    if (!token) {
+      try {
+        const internalSession = (supabase as any)?.auth?.currentSession
+          ?? (supabase as any)?.auth?._session
+          ?? (supabase as any)?.realtime?.accessToken
+          ?? null;
+        if (internalSession) token = typeof internalSession === 'string' ? internalSession : (internalSession?.access_token ?? '');
+      } catch {}
+    }
+    // Fallback 2: read from AsyncStorage on native
+    if (!token && Platform.OS !== 'web') {
+      try {
+        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+        const keys = await AsyncStorage.getAllKeys();
+        const sessionKey = keys.find((k: string) => k.includes('supabase') && k.includes('auth-token'));
+        if (sessionKey) {
+          const raw = await AsyncStorage.getItem(sessionKey);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            const session = parsed?.currentSession ?? parsed?.session ?? parsed;
+            token = session?.access_token ?? '';
+          }
+        }
+      } catch {}
+    }
+
+    // Last resort: try refreshing the session
+    if (!token) {
+      try {
+        const { data } = await supabase.auth.refreshSession();
+        token = data?.session?.access_token ?? '';
+      } catch {}
     }
 
     if (!token) {
-      console.warn('[art] No auth token — skipping art generation (user not logged in or session expired)');
+      console.warn('[art] No auth token — cannot generate art (user not logged in or session expired)');
       return null;
     }
 
@@ -392,7 +428,7 @@ async function invokeArtFunction(params: Record<string, unknown>, cacheKey: stri
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type ArtState = { url: string | null; loading: boolean };
+type ArtState = { url: string | null; loading: boolean; error?: boolean };
 type AllArt   = { now: ArtState; week: ArtState; month: ArtState; forecast: ArtState; print: ArtState };
 type DayData  = {
   ds: string; dayLabel?: string; dayNum?: number; isToday: boolean;
@@ -418,6 +454,7 @@ function Canvas({
   artUrl: string | null; loading: boolean; height: number;
   onRegen: () => void; onFail?: () => void;
   showRetryOnFail?: boolean;
+  error?: boolean;
   gradient?: 'soft' | 'full' | 'vignette';
   children: React.ReactNode;
 }) {
@@ -457,13 +494,13 @@ function Canvas({
         <View style={[StyleSheet.absoluteFill, cs.shimmer]}>
           <ActivityIndicator size="small" color={Colors.primary} />
           {/* Same message on web and native — generation takes 15–60s */}
-          <Text style={cs.shimText}>Rendering your AI art — 15–60 s…</Text>
+          <Text style={cs.shimText}>Rendering your AI art — up to 60 s…</Text>
         </View>
       ) : (
         <View style={[StyleSheet.absoluteFill, cs.placeholder]}>
           <MaterialIcons name="auto-awesome" size={22} color="rgba(255,255,255,0.2)" />
           <Text style={cs.plhText}>Art generates automatically when you log a mood</Text>
-          {showRetryOnFail ? (
+          {(showRetryOnFail) ? (
             <Pressable
               onPress={onRegen}
               style={({ pressed }) => [{
@@ -475,7 +512,7 @@ function Canvas({
               }]}
             >
               <MaterialIcons name="refresh" size={16} color="#7C83FF" />
-              <Text style={{ fontSize: 13, fontWeight: '700', color: '#7C83FF', includeFontPadding: false } as any}>Generate Art</Text>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: '#7C83FF', includeFontPadding: false } as any}>Try Again</Text>
             </Pressable>
           ) : null}
         </View>
@@ -574,11 +611,11 @@ export default function MappScreen() {
 
   const [activeLayer, setActiveLayer] = useState<LayerKey>('correlations');
   const [art, setArt] = useState<AllArt>({
-    now:      { url: null, loading: false },
-    week:     { url: null, loading: false },
-    month:    { url: null, loading: false },
-    forecast: { url: null, loading: false },
-    print:    { url: null, loading: false },
+    now:      { url: null, loading: false, error: false },
+    week:     { url: null, loading: false, error: false },
+    month:    { url: null, loading: false, error: false },
+    forecast: { url: null, loading: false, error: false },
+    print:    { url: null, loading: false, error: false },
   });
 
   const patchArt = useCallback((k: keyof AllArt, p: Partial<ArtState>) =>
@@ -586,22 +623,36 @@ export default function MappScreen() {
 
   const fetchRef = useRef<Set<string>>(new Set());
 
-  const doFetch = useCallback(async (k: keyof AllArt, params: Record<string, unknown>, ckey: string) => {
-    if (fetchRef.current.has(k)) return;
-    fetchRef.current.add(k);
-    try {
-      patchArt(k, { loading: true });
-      // Route through Edge Function — do NOT call Pollinations directly.
-      // Edge Function handles: 3 retries × 90s per attempt + 20s backoff on 429.
-      // CLIENT RULE (PROJECT_NOTES): raw fetch with 180s timeout — never use supabase.functions.invoke().
-      // Do NOT add client-side retries here — the Edge Function already retries internally.
-      const uri = await invokeArtFunction(params, ckey);
-      patchArt(k, { url: uri ?? null, loading: false });
-    } catch {
-      patchArt(k, { loading: false });
-    } finally {
-      fetchRef.current.delete(k);
-    }
+  // In-flight promise dedup map — prevents duplicate concurrent fetches for the same layer.
+  // If doFetch('now', ...) is already running and called again, the second call is a no-op.
+  const inflightRef = useRef<Map<string, Promise<void>>>(new Map());
+
+  const doFetch = useCallback((k: keyof AllArt, params: Record<string, unknown>, ckey: string): Promise<void> => {
+    // Dedup: if already running for this key, return the existing promise
+    const existing = inflightRef.current.get(k);
+    if (existing) return existing;
+
+    const promise = (async () => {
+      if (fetchRef.current.has(k)) return;
+      fetchRef.current.add(k);
+      try {
+        patchArt(k, { loading: true, error: false });
+        // Route through Edge Function — do NOT call Pollinations directly.
+        // Edge Function handles: 2 retries × 60s per attempt + 10s backoff on 429.
+        // CLIENT RULE (PROJECT_NOTES): raw fetch with 130s timeout — never use supabase.functions.invoke().
+        // Do NOT add client-side retries here — the Edge Function already retries internally.
+        const uri = await invokeArtFunction(params, ckey);
+        patchArt(k, { url: uri ?? null, loading: false, error: !uri });
+      } catch {
+        patchArt(k, { loading: false, error: true });
+      } finally {
+        fetchRef.current.delete(k);
+        inflightRef.current.delete(k);
+      }
+    })();
+
+    inflightRef.current.set(k, promise);
+    return promise;
   }, [patchArt]);
 
   // ── Computed data ──────────────────────────────────────────────────────────
@@ -718,7 +769,8 @@ export default function MappScreen() {
     const entry = latest;
     if (!entry) return;
     fetchRef.current.delete('now');
-    patchArt('now', { url: null, loading: false });
+    inflightRef.current.delete('now');
+    patchArt('now', { url: null, loading: false, error: false });
     const bustStr = String(entry.id ?? entry.timestamp ?? Date.now());
     let bustSeed = 0;
     for (let i = 0; i < bustStr.length; i++) bustSeed = ((bustSeed * 31 + bustStr.charCodeAt(i)) >>> 0);
@@ -728,7 +780,7 @@ export default function MappScreen() {
 
   const regenWeek = useCallback(() => {
     const wA = weekAvgRef.current; if (!wA) return;
-    fetchRef.current.delete('week'); patchArt('week', { url: null, loading: false });
+    fetchRef.current.delete('week'); inflightRef.current.delete('week'); patchArt('week', { url: null, loading: false, error: false });
     const vd = weekDaysRef.current.filter((d: DayData) => d.avg !== null);
     const wb = vd.reduce((s: number, d: DayData) => s + d.dims.body, 0) / Math.max(vd.length, 1);
     const wm = vd.reduce((s: number, d: DayData) => s + d.dims.mind, 0) / Math.max(vd.length, 1);
@@ -739,14 +791,14 @@ export default function MappScreen() {
 
   const regenMonth = useCallback(() => {
     const mA = monthAvgRef.current; if (!mA) return;
-    fetchRef.current.delete('month'); patchArt('month', { url: null, loading: false });
+    fetchRef.current.delete('month'); inflightRef.current.delete('month'); patchArt('month', { url: null, loading: false, error: false });
     const bustSeed = (Math.floor(Math.random() * 999999) + 1);
     doFetch('month', { artType: 'landscape', score: mA, dimensions: { body: 0, mind: 0, energy: 0.5, focus: 0.5 }, trend: mA > 60 ? 'improving' : mA < 40 ? 'declining' : 'stable', seedOverride: bustSeed }, `month_${mA}_regen_${Date.now()}`);
   }, [doFetch, patchArt]);
 
   const regenForecast = useCallback(() => {
     const bl = baselineRef.current; if (!bl) return;
-    fetchRef.current.delete('forecast'); patchArt('forecast', { url: null, loading: false });
+    fetchRef.current.delete('forecast'); inflightRef.current.delete('forecast'); patchArt('forecast', { url: null, loading: false, error: false });
     const fA = forecastAvgRef.current;
     const tod = new Date().getHours(); const tl = tod < 12 ? 'morning' : tod < 17 ? 'afternoon' : tod < 21 ? 'evening' : 'night';
     // Include a random seed override so each manual regen / auto-retry produces a distinct URL
@@ -756,7 +808,7 @@ export default function MappScreen() {
 
   const regenPrint = useCallback(() => {
     const ps = printRef.current; if (!ps) return;
-    fetchRef.current.delete('print'); patchArt('print', { url: null, loading: false });
+    fetchRef.current.delete('print'); inflightRef.current.delete('print'); patchArt('print', { url: null, loading: false, error: false });
     const tl = ps.topTag ? CONTEXT_TAGS.find(t => t.id === ps.topTag!.tagId)?.label ?? null : null;
     const bustSeed = (Math.floor(Math.random() * 999999) + 1);
     doFetch('print', { artType: 'print', score: Math.round(ps.avg), dimensions: { body: ps.avgBody * 2 - 1, mind: ps.avgMind * 2 - 1, energy: ps.avgEnergy, focus: 0.5 }, volatility: ps.volatility, trend: ps.trend, dominantTag: tl, entryCount: ps.count, seedOverride: bustSeed }, `print_${Math.round(ps.avg)}_${ps.count}_regen_${Date.now()}`);
@@ -801,94 +853,70 @@ export default function MappScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLayer, doFetch, latest, volatility, weekAvg, weekDays, monthAvg, baseline, forecastAvg, printStats, weatherData, moodLogEntries.length]);
 
-  // Background pre-fetch: loads all 5 art pieces with a short stagger.
-  // Uses refs for all data so the effect ONLY re-runs when the log count
-  // changes (new mood logged) — not on every volatile state update.
-  // This prevents the constant cancel/restart loop that was blocking Week+.
-  const bgFetchRunning = useRef(false);
+  // Background pre-fetch: fires ALL 5 art pieces in PARALLEL with individual guards.
+  // Previously sequential (await each before starting next), which meant a slow/failed
+  // layer blocked all subsequent layers. Now each layer races independently —
+  // a 60s Now generation no longer delays Week from starting.
+  // Guards prevent duplicate fetches: fetchRef dedup + inflightRef promise dedup.
   const lastFetchedLogCount = useRef(-1);
 
   useEffect(() => {
     if (!moodLogEntries.length) return;
-    // Only re-run when a new mood is logged (log count changed)
-    if (bgFetchRunning.current) return;
+    // Only re-run when a new mood is logged (log count changed) and not all art is cached
     if (lastFetchedLogCount.current === moodLogEntries.length && Object.values(artRef.current).every(a => a.url)) return;
-
-    bgFetchRunning.current = true;
     lastFetchedLogCount.current = moodLogEntries.length;
 
-    const STAG = 2000; // 2s stagger between background prefetch layers
     const logCount = moodLogEntries.length;
 
-    const run = async () => {
-      // ── Now ──────────────────────────────────────────────────────────────
-      const tryNow = () => {
-        const entry = latestRef.current;
-        if (!entry) return Promise.resolve();
-        if (fetchRef.current.has('now')) return Promise.resolve();
-        if (artRef.current.now.url) return Promise.resolve();
-        const bustStr = String(entry.id ?? entry.timestamp ?? Date.now());
-        let bustSeed = 0;
-        for (let i = 0; i < bustStr.length; i++) bustSeed = ((bustSeed * 31 + bustStr.charCodeAt(i)) >>> 0);
-        bustSeed = (bustSeed % 999999) || 1;
-        return doFetch('now', { artType: 'now', score: entry.score, dimensions: entry.dimensions, timeOfDay: entry.timeOfDay, volatility: volatilityRef.current, seedOverride: bustSeed }, `now_${entry.id ?? entry.timestamp}`);
-      };
-      // ── Week ─────────────────────────────────────────────────────────────
-      const tryW = () => {
-        const _wA = weekAvgRef.current;
-        if (!_wA) return Promise.resolve();
-        if (fetchRef.current.has('week')) return Promise.resolve();
-        if (artRef.current.week.url) return Promise.resolve();
-        const vd = weekDaysRef.current.filter((d: DayData) => d.avg !== null);
-        const wb = vd.reduce((s: number, d: DayData) => s + d.dims.body, 0) / Math.max(vd.length, 1);
-        const wm = vd.reduce((s: number, d: DayData) => s + d.dims.mind, 0) / Math.max(vd.length, 1);
-        const we = vd.reduce((s: number, d: DayData) => s + d.dims.energy, 0) / Math.max(vd.length, 1);
-        return doFetch('week', { artType: 'landscape', score: _wA, dimensions: { body: wb * 2 - 1, mind: wm * 2 - 1, energy: we, focus: 0.5 }, trend: 'stable', weatherCondition: weatherRef.current?.condition }, `week_${_wA}_L${logCount}`);
-      };
-      // ── Month ────────────────────────────────────────────────────────────
-      const tryM = () => {
-        const _mA = monthAvgRef.current;
-        if (!_mA) return Promise.resolve();
-        if (fetchRef.current.has('month')) return Promise.resolve();
-        if (artRef.current.month.url) return Promise.resolve();
-        return doFetch('month', { artType: 'landscape', score: _mA, dimensions: { body: 0, mind: 0, energy: 0.5, focus: 0.5 }, trend: _mA > 60 ? 'improving' : _mA < 40 ? 'declining' : 'stable' }, `month_${_mA}_L${logCount}`);
-      };
-      // ── Forecast ─────────────────────────────────────────────────────────
-      const tryF = () => {
-        const _bl = baselineRef.current;
-        if (!_bl) return Promise.resolve();
-        if (fetchRef.current.has('forecast')) return Promise.resolve();
-        if (artRef.current.forecast.url) return Promise.resolve();
-        const _fA = forecastAvgRef.current;
-        const tod = new Date().getHours();
-        const tl = tod < 12 ? 'morning' : tod < 17 ? 'afternoon' : tod < 21 ? 'evening' : 'night';
-        return doFetch('forecast', { artType: 'forecast', score: _fA, forecastMood: _fA >= 65 ? 'high' : _fA < 45 ? 'low' : 'moderate', timeOfDay: tl, weatherCondition: weatherRef.current?.condition, trend: 'stable' }, `fcast_${_fA}_${tl}_L${logCount}`);
-      };
-      // ── Print ────────────────────────────────────────────────────────────
-      const tryP = () => {
-        const _ps = printRef.current;
-        if (!_ps) return Promise.resolve();
-        if (fetchRef.current.has('print')) return Promise.resolve();
-        if (artRef.current.print.url) return Promise.resolve();
-        const tl = _ps.topTag ? CONTEXT_TAGS.find(t => t.id === _ps.topTag!.tagId)?.label ?? null : null;
-        return doFetch('print', { artType: 'print', score: Math.round(_ps.avg), dimensions: { body: _ps.avgBody * 2 - 1, mind: _ps.avgMind * 2 - 1, energy: _ps.avgEnergy, focus: 0.5 }, volatility: _ps.volatility, trend: _ps.trend, dominantTag: tl, entryCount: _ps.count }, `print_${Math.round(_ps.avg)}_${_ps.count}`);
-      };
-
-      try {
-        await tryNow();
-        await new Promise(r => setTimeout(r, STAG));
-        await tryW();
-        await new Promise(r => setTimeout(r, STAG));
-        await tryM();
-        await new Promise(r => setTimeout(r, STAG));
-        await tryF();
-        await new Promise(r => setTimeout(r, STAG));
-        await tryP();
-      } finally {
-        bgFetchRunning.current = false;
-      }
+    // ── Now ───────────────────────────────────────────────────────────────
+    const tryNow = () => {
+      const entry = latestRef.current;
+      if (!entry || fetchRef.current.has('now') || artRef.current.now.url) return;
+      const bustStr = String(entry.id ?? entry.timestamp ?? Date.now());
+      let bustSeed = 0;
+      for (let i = 0; i < bustStr.length; i++) bustSeed = ((bustSeed * 31 + bustStr.charCodeAt(i)) >>> 0);
+      bustSeed = (bustSeed % 999999) || 1;
+      doFetch('now', { artType: 'now', score: entry.score, dimensions: entry.dimensions, timeOfDay: entry.timeOfDay, volatility: volatilityRef.current, seedOverride: bustSeed }, `now_${entry.id ?? entry.timestamp}`).catch(() => {});
     };
-    run();
+    // ── Week ─────────────────────────────────────────────────────────────
+    const tryW = () => {
+      const _wA = weekAvgRef.current;
+      if (!_wA || fetchRef.current.has('week') || artRef.current.week.url) return;
+      const vd = weekDaysRef.current.filter((d: DayData) => d.avg !== null);
+      const wb = vd.reduce((s: number, d: DayData) => s + d.dims.body, 0) / Math.max(vd.length, 1);
+      const wm = vd.reduce((s: number, d: DayData) => s + d.dims.mind, 0) / Math.max(vd.length, 1);
+      const we = vd.reduce((s: number, d: DayData) => s + d.dims.energy, 0) / Math.max(vd.length, 1);
+      doFetch('week', { artType: 'landscape', score: _wA, dimensions: { body: wb * 2 - 1, mind: wm * 2 - 1, energy: we, focus: 0.5 }, trend: 'stable', weatherCondition: weatherRef.current?.condition }, `week_${_wA}_L${logCount}`).catch(() => {});
+    };
+    // ── Month ────────────────────────────────────────────────────────────
+    const tryM = () => {
+      const _mA = monthAvgRef.current;
+      if (!_mA || fetchRef.current.has('month') || artRef.current.month.url) return;
+      doFetch('month', { artType: 'landscape', score: _mA, dimensions: { body: 0, mind: 0, energy: 0.5, focus: 0.5 }, trend: _mA > 60 ? 'improving' : _mA < 40 ? 'declining' : 'stable' }, `month_${_mA}_L${logCount}`).catch(() => {});
+    };
+    // ── Forecast ─────────────────────────────────────────────────────────
+    const tryF = () => {
+      const _bl = baselineRef.current;
+      if (!_bl || fetchRef.current.has('forecast') || artRef.current.forecast.url) return;
+      const _fA = forecastAvgRef.current;
+      const tod = new Date().getHours();
+      const tl = tod < 12 ? 'morning' : tod < 17 ? 'afternoon' : tod < 21 ? 'evening' : 'night';
+      doFetch('forecast', { artType: 'forecast', score: _fA, forecastMood: _fA >= 65 ? 'high' : _fA < 45 ? 'low' : 'moderate', timeOfDay: tl, weatherCondition: weatherRef.current?.condition, trend: 'stable' }, `fcast_${_fA}_${tl}_L${logCount}`).catch(() => {});
+    };
+    // ── Print ────────────────────────────────────────────────────────────
+    const tryP = () => {
+      const _ps = printRef.current;
+      if (!_ps || fetchRef.current.has('print') || artRef.current.print.url) return;
+      const tl = _ps.topTag ? CONTEXT_TAGS.find(t => t.id === _ps.topTag!.tagId)?.label ?? null : null;
+      doFetch('print', { artType: 'print', score: Math.round(_ps.avg), dimensions: { body: _ps.avgBody * 2 - 1, mind: _ps.avgMind * 2 - 1, energy: _ps.avgEnergy, focus: 0.5 }, volatility: _ps.volatility, trend: _ps.trend, dominantTag: tl, entryCount: _ps.count }, `print_${Math.round(_ps.avg)}_${_ps.count}`).catch(() => {});
+    };
+
+    // Fire all layers in parallel — each has its own guard, failures are isolated
+    tryNow();
+    tryW();
+    tryM();
+    tryF();
+    tryP();
   }, [moodLogEntries.length, doFetch]); // eslint-disable-line
 
   const TILE_W = 88;
@@ -1046,6 +1074,7 @@ function LayerNow({ entry, allEntries, volatility, artState, onRegen }: { // esl
       <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H}
         onRegen={onRegen}
         onFail={onRegen}
+        showRetryOnFail={!!(artState.error)}
         gradient="vignette">
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <RadialCompass dims={dims} size={GAUGE_W} score={entry.score} scoreColor={sc} />
@@ -1213,7 +1242,7 @@ function LayerWeek({ days, weekAvg, weatherData, artState, onRegen, tempUnit }: 
 
   return (
     <View style={{ gap: 16 }}>
-      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} gradient="soft">
+      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} showRetryOnFail={!!(artState.error)} gradient="soft">
         <View pointerEvents="none" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ fontSize: 52, fontWeight: '900', color: sc, includeFontPadding: false } as any}>{weekAvg}</Text>
           <Text style={{ fontSize: 15, color: G_MUTED, fontWeight: '600', includeFontPadding: false } as any}>week average</Text>
@@ -1408,7 +1437,7 @@ function LayerMonth({ days, monthAvg, entries, artState, onRegen }: {
 
   return (
     <View style={{ gap: 16 }}>
-      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} gradient="soft">
+      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} showRetryOnFail={!!(artState.error)} gradient="soft">
         <View pointerEvents="none" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ fontSize: 52, fontWeight: '900', color: sc, includeFontPadding: false } as any}>{monthAvg}</Text>
           <Text style={{ fontSize: 15, color: G_MUTED, fontWeight: '600', includeFontPadding: false } as any}>30-day average</Text>
@@ -1977,7 +2006,7 @@ function LayerForecast({ entries, weatherData, timePat, tagCorr, baseline, forec
 
   return (
     <View style={{ gap: 16 }}>
-      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} showRetryOnFail gradient="soft">
+      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} showRetryOnFail={!!(artState.error)} gradient="soft">
         <View pointerEvents="none" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ fontSize: 52, fontWeight: '900', color: displayCol, includeFontPadding: false } as any}>{displayAvg}</Text>
           <Text style={{ fontSize: 15, color: G_MUTED, fontWeight: '600', includeFontPadding: false } as any}>waking hours forecast</Text>
@@ -2680,7 +2709,7 @@ function LayerPrint({ entries, stats, artState, onRegen }: {
 
   return (
     <View style={{ gap: 16 }}>
-      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} showRetryOnFail gradient="full">
+      <Canvas artUrl={artState.url} loading={artState.loading} height={CANVAS_H} onRegen={onRegen} onFail={onRegen} showRetryOnFail={!!(artState.error)} gradient="full">
         <View pointerEvents="none" style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 }}>
           <MaterialIcons name="fingerprint" size={28} color={avgCol + 'CC'} />
           <Text style={{ fontSize: 40, fontWeight: '900', color: avgCol, includeFontPadding: false } as any}>{Math.round(stats.avg)}</Text>

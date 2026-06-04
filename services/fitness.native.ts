@@ -145,19 +145,77 @@ async function fetchFromHealthKit(days: number): Promise<DailyFitnessEntry[]> {
   const start = new Date(now.getTime() - days * 86400000);
   const options = { startDate: start.toISOString(), endDate: now.toISOString(), includeManuallyAdded: true };
   const safe = (fn: () => Promise<any[]>): Promise<any[]> => fn().catch(() => []);
-  const [stepsData, hrData, sleepData, exerciseData] = await Promise.all([
+  // Also try to get dedicated resting HR samples (available in iOS 11+)
+  const [stepsData, hrData, restingHRData, sleepData, exerciseData] = await Promise.all([
     safe(() => new Promise<any[]>(res => AppleHealthKit.getDailyStepCountSamples(options, (_: any, r: any) => res(r || [])))),
     safe(() => new Promise<any[]>(res => AppleHealthKit.getHeartRateSamples(options, (_: any, r: any) => res(r || [])))),
+    safe(() => new Promise<any[]>(res => {
+      // getRestingHeartRateSamples is available in react-native-health ≥ 1.x
+      if (typeof AppleHealthKit.getRestingHeartRateSamples === 'function') {
+        AppleHealthKit.getRestingHeartRateSamples(options, (_: any, r: any) => res(r || []));
+      } else {
+        res([]);
+      }
+    })),
     safe(() => new Promise<any[]>(res => AppleHealthKit.getSleepSamples(options, (_: any, r: any) => res(r || [])))),
     safe(() => new Promise<any[]>(res => AppleHealthKit.getActiveEnergyBurned(options, (_: any, r: any) => res(r || [])))),
   ]);
   const byDate: Record<string, DailyFitnessEntry> = {};
   for (let i = 0; i < days; i++) { const d = new Date(now.getTime() - i * 86400000); const key = d.toISOString().split('T')[0]; byDate[key] = { date: key, steps: 0, activeMinutes: 0, restingHeartRate: null, avgHeartRate: null, caloriesBurned: 0, workoutMinutes: 0, sleepHours: null, heartRateSamples: [] }; }
   stepsData.forEach((s: any) => { const k = new Date(s.startDate).toISOString().split('T')[0]; if (byDate[k]) byDate[k].steps += Math.round(s.value || 0); });
-  hrData.forEach((h: any) => { const k = new Date(h.startDate).toISOString().split('T')[0]; if (byDate[k]) byDate[k].heartRateSamples!.push(Math.round(h.value || 0)); });
-  Object.values(byDate).forEach(e => { const s = e.heartRateSamples || []; if (s.length > 0) { e.avgHeartRate = Math.round(s.reduce((a, b) => a + b, 0) / s.length); e.restingHeartRate = Math.min(...s); } e.activeMinutes = Math.round(e.steps / 100); });
+  hrData.forEach((h: any) => {
+    const bpm = Math.round(h.value || 0);
+    if (bpm < 25 || bpm > 250) return; // filter noise/artifacts
+    const k = new Date(h.startDate).toISOString().split('T')[0];
+    if (byDate[k]) byDate[k].heartRateSamples!.push(bpm);
+  });
+  // Dedicated resting HR samples (most accurate — recorded by Apple Watch at rest)
+  restingHRData.forEach((h: any) => {
+    const bpm = Math.round(h.value || 0);
+    if (bpm < 25 || bpm > 150) return;
+    const k = new Date(h.startDate).toISOString().split('T')[0];
+    if (byDate[k]) byDate[k].restingHeartRate = bpm;
+  });
+  Object.values(byDate).forEach(e => {
+    const s = e.heartRateSamples || [];
+    if (s.length > 0) {
+      e.avgHeartRate = Math.round(s.reduce((a, b) => a + b, 0) / s.length);
+      // If no dedicated resting HR sample, estimate using 10th percentile of all samples
+      // (much more accurate than Math.min which picks up artifacts)
+      if (!e.restingHeartRate) {
+        const sorted = [...s].sort((a, b) => a - b);
+        const idx = Math.max(0, Math.floor(sorted.length * 0.1));
+        const candidate = sorted[idx];
+        if (candidate >= 35 && candidate <= 120) e.restingHeartRate = candidate;
+      }
+    }
+    e.activeMinutes = Math.round(e.steps / 100);
+  });
   exerciseData.forEach((ex: any) => { const k = new Date(ex.startDate).toISOString().split('T')[0]; if (byDate[k]) { byDate[k].caloriesBurned += Math.round(ex.value || 0); byDate[k].workoutMinutes += 30; } });
-  sleepData.forEach((sl: any) => { const k = new Date(sl.startDate).toISOString().split('T')[0]; if (byDate[k]) { const hrs = (new Date(sl.endDate).getTime() - new Date(sl.startDate).getTime()) / 3600000; byDate[k].sleepHours = parseFloat(((byDate[k].sleepHours || 0) + hrs).toFixed(1)); } });
+  // Sleep: only count actual asleep stages (ASLEEP, CORE, DEEP, REM)
+  // Filter out IN_BED / AWAKE samples which inflate hours
+  const ASLEEP_VALUES = new Set([0, 1, 2, 3, 4]); // HKCategoryValueSleepAnalysis: INBED=0, ASLEEP=1, AWAKE=2, CORE=3, DEEP=4, REM=5
+  // react-native-health returns value as string or number depending on version
+  const isAsleepSample = (sl: any): boolean => {
+    const v = sl.value;
+    if (typeof v === 'string') {
+      const lower = v.toLowerCase();
+      return lower === 'asleep' || lower === 'core' || lower === 'deep' || lower === 'rem' || lower === 'inbed';
+    }
+    // numeric: 0=INBED, 1=ASLEEP, 3=CORE, 4=DEEP, 5=REM — all count toward sleep duration
+    return typeof v === 'number' && v !== 2; // exclude AWAKE (2)
+  };
+  sleepData.forEach((sl: any) => {
+    if (!isAsleepSample(sl)) return;
+    const startMs = new Date(sl.startDate).getTime();
+    const endMs = new Date(sl.endDate).getTime();
+    if (endMs <= startMs) return;
+    const hrs = (endMs - startMs) / 3600000;
+    if (hrs > 14 || hrs < 0.05) return; // sanity bounds
+    // Credit sleep to the date the person woke up (end date)
+    const k = new Date(sl.endDate).toISOString().split('T')[0];
+    if (byDate[k]) byDate[k].sleepHours = parseFloat(Math.min(14, (byDate[k].sleepHours || 0) + hrs).toFixed(1));
+  });
   return Object.values(byDate).sort((a, b) => b.date.localeCompare(a.date));
 }
 

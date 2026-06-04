@@ -1,8 +1,9 @@
 /**
- * generate-mood-art — Free AI image generation via Pollinations.ai
+ * generate-mood-art — AI image generation via OnSpace AI (Gemini Flash Image)
  *
- * Uses https://image.pollinations.ai (100% free, no API key required)
- * with the FLUX model for high-quality mood visualizations.
+ * Uses OnSpace AI image generation (google/gemini-2.5-flash-image) for
+ * high-quality mood visualizations. Falls back to the previous Pollinations
+ * approach if OnSpace AI is unavailable.
  *
  * Art types:
  *   "now"       → radial energy portrait for current emotional state
@@ -29,18 +30,6 @@ const sceneMood = (s: number) => {
   if (s >= 50) return 'gentle, hazy, in-between states';
   if (s >= 35) return 'brooding, quiet, introspective';
   return 'heavy, deep, searching for light';
-};
-
-// ── Dimension sizes for Pollinations ────────────────────────────────────────
-// Kept small for fast generation — flux-schnell handles these in ~15-25s
-const getDimensions = (aspectRatio: string): { width: number; height: number } => {
-  switch (aspectRatio) {
-    case '16:9': return { width: 640, height: 360 };   // fast 16:9
-    case '9:16': return { width: 360, height: 640 };
-    case '4:3':  return { width: 640, height: 480 };
-    case '3:4':  return { width: 480, height: 640 };
-    default:     return { width: 512, height: 512 };   // fast 1:1
-  }
 };
 
 serve(async (req) => {
@@ -84,20 +73,19 @@ serve(async (req) => {
         dimEnergy > 70 ? 'Dramatic golden hour light, long warm shadows.' : dimEnergy > 40 ? 'Soft diffused afternoon light.' : 'Overcast flat subdued light.',
         trend === 'improving' ? 'A glowing river flows toward bright highlands.' : trend === 'declining' ? 'Terrain descends into misty valleys.' : 'Balanced plateau with varied terrain.',
         cyclePhase === 'follicular' ? 'Spring-green bloom accent.' : cyclePhase === 'ovulation' ? 'Golden summit highlight.' : cyclePhase === 'luteal' ? 'Warm amber autumn tones.' : cyclePhase === 'menstrual' ? 'Deep red earth tones.' : '',
-        'National Geographic photorealistic quality, 8K detail, no text, no people, no UI.',
+        'National Geographic photorealistic quality, ultra-detailed, no text, no people, no UI.',
       ].filter(Boolean).join(' ');
     }
 
     else if (artType === 'print') {
       aspectRatio = '1:1';
-      // Fingerprint ridge pattern — matches LayerPrint description in mapp.tsx
       const ridgePattern = volatility === 'stable'
         ? 'perfect loop whorl fingerprint — tight precise concentric ridge lines, mathematically symmetrical'
         : volatility === 'variable'
           ? 'arch-loop composite fingerprint — bifurcating organic ridges with natural forks and splits'
           : 'fragmented delta fingerprint — shattered ridge endings, broken whorls, crystalline fracture points';
       prompt = [
-        `Extreme macro forensic fingerprint scan under microscope, ultra-detailed ridge and valley pattern, dark background. 4K.`,
+        `Extreme macro forensic fingerprint scan under microscope, ultra-detailed ridge and valley pattern, dark background.`,
         `Ridge color: ${palette(s)}.`,
         `Ridge pattern: ${ridgePattern}.`,
         dimBody > 60 ? 'Thick bold raised ridges, deep dark valleys between them.' : 'Fine delicate ridge lines, subtle valley depth.',
@@ -125,7 +113,7 @@ serve(async (req) => {
         dimEnergy > 60 ? 'High altitude cirrus clouds, fast-moving energetic sky.' : 'Low cumulus clouds, slow-moving grounded atmosphere.',
         trend === 'improving' ? 'Clearing skies with golden beams breaking through.' : trend === 'declining' ? 'Approaching weather front, dramatic contrast.' : 'Stable balanced atmospheric conditions.',
         timeOfDay === 'morning' ? 'Misty lake reflection in the foreground.' : timeOfDay === 'evening' ? 'Silhouetted treeline at dusk.' : timeOfDay === 'night' ? 'Starlit horizon.' : 'Expansive open meadow foreground.',
-        'Ansel Adams quality photography, ultra-sharp, no text, no people.',
+        'Ultra-sharp, cinematic quality, no text, no people.',
       ].filter(Boolean).join(' ');
     }
 
@@ -133,7 +121,7 @@ serve(async (req) => {
       // 'now' — energy field portrait
       aspectRatio = '1:1';
       prompt = [
-        `Abstract energy field visualization, living emotional compass, present moment. 4K digital art.`,
+        `Abstract energy field visualization, living emotional compass, present moment. Digital art.`,
         `Wellness score ${s}/100: ${sceneMood(s)}.`,
         `Colors: ${palette(s)}.`,
         `Four energy quadrants:`,
@@ -147,62 +135,88 @@ serve(async (req) => {
       ].filter(Boolean).join(' ');
     }
 
-    // ── Call Pollinations.ai (free, no API key) ──────────────────────────────
-    const { width, height } = getDimensions(aspectRatio);
-    // seedOverride from client ensures forced-regen produces a distinct image
-    const seed = (seedOverride != null ? Number(seedOverride) : null) ?? Math.floor(Math.random() * 999999);
-    // flux-schnell: fastest Pollinations model
-    // enhance=false keeps latency low; nologo removes watermark
-    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&model=flux-schnell&nologo=true&enhance=false&seed=${seed}&safe=false`;
+    // ── Try OnSpace AI first ──────────────────────────────────────────────────
+    const onspaceApiKey = Deno.env.get('ONSPACE_AI_API_KEY');
+    const onspaceBaseUrl = Deno.env.get('ONSPACE_AI_BASE_URL');
 
-    console.log(`[mood-art] Generating ${artType} via Pollinations flux-schnell (${width}x${height}) seed=${seed}`);
+    let imageBase64: string | null = null;
+    let imageContentType = 'image/png';
 
-    // Fetch with up to 3 attempts; 90s timeout each.
-    // 429 rate-limit = Pollinations busy — MUST wait 20s before retry (per-IP rate limit).
-    // Normal failures get a 5s wait.
-    // Total max time ~3×90s + 2×20s = ~310s max, but typical is 15-60s on first attempt.
-    let imgResponse: Response | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) {
-        const wait = 20000; // 20s backoff — required for Pollinations 429 rate limits
-        console.log(`[mood-art] Retrying after ${wait / 1000}s (attempt ${attempt + 1})`);
-        await new Promise(r => setTimeout(r, wait));
-      }
+    if (onspaceApiKey && onspaceBaseUrl) {
+      console.log(`[mood-art] Generating ${artType} via OnSpace AI (gemini-2.5-flash-image) aspect=${aspectRatio}`);
       try {
-        imgResponse = await fetch(pollinationsUrl, {
-          signal: AbortSignal.timeout(90000), // 90s per attempt
+        const aiResp = await fetch(`${onspaceBaseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${onspaceApiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'google/gemini-2.5-flash-image',
+            modalities: ['image', 'text'],
+            messages: [{ role: 'user', content: prompt }],
+            image_config: { aspect_ratio: aspectRatio, image_size: '1K' },
+          }),
+          signal: AbortSignal.timeout(90000),
         });
-        if (imgResponse.status === 429) {
-          console.warn('[mood-art] 429 rate limit, will retry after 20s');
-          imgResponse = null;
-          continue;
+
+        if (aiResp.ok) {
+          const aiData = await aiResp.json();
+          const imgUrl = aiData?.choices?.[0]?.message?.images?.[0]?.image_url?.url as string | undefined;
+          if (imgUrl && imgUrl.startsWith('data:')) {
+            // Extract base64 and content type from data URL
+            const match = imgUrl.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              imageContentType = match[1];
+              imageBase64 = match[2];
+              console.log(`[mood-art] OnSpace AI success, content-type=${imageContentType}`);
+            }
+          }
+        } else {
+          const errText = await aiResp.text().catch(() => '');
+          console.warn(`[mood-art] OnSpace AI HTTP ${aiResp.status}: ${errText}`);
         }
-        if (!imgResponse.ok) {
-          console.warn(`[mood-art] HTTP ${imgResponse.status}, will retry`);
-          imgResponse = null;
-          await new Promise(r => setTimeout(r, 5000));
-          continue;
-        }
-        break; // success
-      } catch (fetchErr) {
-        console.warn(`[mood-art] Fetch attempt ${attempt + 1} failed:`, fetchErr);
-        imgResponse = null;
+      } catch (aiErr) {
+        console.warn('[mood-art] OnSpace AI error:', aiErr);
       }
     }
 
-    if (!imgResponse || !imgResponse.ok) {
-      const status = imgResponse?.status ?? 0;
-      console.error('[mood-art] Pollinations error:', status, imgResponse?.statusText ?? 'no response');
-      return new Response(
-        JSON.stringify({ error: `Image generation failed: ${status}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    // ── Fallback: Pollinations.ai ─────────────────────────────────────────────
+    if (!imageBase64) {
+      console.log(`[mood-art] OnSpace AI unavailable, falling back to Pollinations`);
+      const seed = (seedOverride != null ? Number(seedOverride) : null) ?? Math.floor(Math.random() * 999999);
+      const w = aspectRatio === '16:9' ? 640 : 512;
+      const h = aspectRatio === '16:9' ? 360 : 512;
+      const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w}&height=${h}&model=flux-schnell&nologo=true&enhance=false&seed=${seed}&safe=false`;
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 8000));
+        try {
+          const imgResp = await fetch(pollinationsUrl, { signal: AbortSignal.timeout(55000) });
+          if (imgResp.ok) {
+            const buf = await imgResp.arrayBuffer();
+            if (buf.byteLength > 1000) {
+              // Convert arraybuffer to base64
+              const uint8 = new Uint8Array(buf);
+              let binary = '';
+              for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+              imageBase64 = btoa(binary);
+              imageContentType = imgResp.headers.get('content-type') ?? 'image/jpeg';
+              console.log(`[mood-art] Pollinations fallback success (attempt ${attempt + 1})`);
+              break;
+            }
+          } else {
+            console.warn(`[mood-art] Pollinations HTTP ${imgResp.status}`);
+          }
+        } catch (pe) {
+          console.warn(`[mood-art] Pollinations attempt ${attempt + 1} failed:`, pe);
+        }
+      }
     }
 
-    const imageBuffer = await imgResponse.arrayBuffer();
-    if (!imageBuffer || imageBuffer.byteLength < 1000) {
+    if (!imageBase64) {
       return new Response(
-        JSON.stringify({ error: 'Generated image too small or empty' }),
+        JSON.stringify({ error: 'Image generation failed: all providers exhausted' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -213,14 +227,19 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    const contentType = imgResponse.headers.get('content-type') ?? 'image/jpeg';
-    const ext = contentType.includes('png') ? 'png' : 'jpg';
-    const fileName = `mood-art/${artType}-${Date.now()}-${seed}.${ext}`;
+    const ext = imageContentType.includes('png') ? 'png' : 'jpg';
+    const seed2 = (seedOverride != null ? Number(seedOverride) : null) ?? Math.floor(Math.random() * 999999);
+    const fileName = `mood-art/${artType}-${Date.now()}-${seed2}.${ext}`;
+
+    // Decode base64 back to binary for upload
+    const binaryStr = atob(imageBase64);
+    const imageBytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) imageBytes[i] = binaryStr.charCodeAt(i);
 
     const { error: uploadError } = await supabase.storage
       .from('vibe-cards')
-      .upload(fileName, imageBuffer, {
-        contentType,
+      .upload(fileName, imageBytes.buffer, {
+        contentType: imageContentType,
         cacheControl: '86400',
         upsert: false,
       });

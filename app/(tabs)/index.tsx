@@ -1105,7 +1105,9 @@ export default function HomeScreen() {
               </View>
             </View>
             <Pressable onPress={() => router.push('/schumann-detail' as any)} style={({ pressed }) => [styles.schumannCard, { borderColor: getStatusColor(schumannReading.status) + '50' }, pressed && { opacity: 0.85 }]}>
-              <Text style={styles.schumannEmoji}>{getStatusEmoji(schumannReading.status)}</Text>
+              <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: getStatusColor(schumannReading.status) + '20', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <MaterialIcons name="graphic-eq" size={26} color={getStatusColor(schumannReading.status)} />
+              </View>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.schumannFreq, { color: getStatusColor(schumannReading.status) }]}>{schumannReading.frequency} Hz · {getStatusLabel(schumannReading.status)}</Text>
                 <Text style={styles.schumannEffect} numberOfLines={1}>{schumannReading.physicalEffects[0]?.effect}</Text>
@@ -1508,9 +1510,9 @@ function CycleTrackerWidget({ cycleEntries, onPress, styles, C }: { cycleEntries
 
 function WeatherStat({ label, value, C }: { label: string; value: string; C: typeof DarkColors }) {
   return (
-    <View style={{ alignItems: 'center', gap: 1 }}>
-      <Text style={{ fontSize: 10, fontWeight: '700', color: C.textSecondary, includeFontPadding: false }}>{value}</Text>
-      <Text style={{ fontSize: 9, color: C.textMuted, includeFontPadding: false }}>{label}</Text>
+    <View style={{ alignItems: 'center', gap: 1, minWidth: 32 }}>
+      <Text style={{ fontSize: 10, fontWeight: '700', color: C.textSecondary, includeFontPadding: false } as any} numberOfLines={1}>{value}</Text>
+      <Text style={{ fontSize: 9, color: C.textMuted, includeFontPadding: false } as any} numberOfLines={1}>{label}</Text>
     </View>
   );
 }
@@ -1730,7 +1732,7 @@ function SoundLabWidget({ onPress, C }: { onPress: (moduleId?: string) => void; 
     moduleIconBg: { width: 34, height: 34, borderRadius: Radius.lg, alignItems: 'center', justifyContent: 'center' },
     moduleTileTitle: { fontSize: Typography.fontSizes.sm, fontWeight: '800', includeFontPadding: false },
     moduleTileSub: { fontSize: 10, includeFontPadding: false },
-    moduleTileDesc: { fontSize: 10, lineHeight: 14, includeFontPadding: false },
+    moduleTileDesc: { fontSize: 13, lineHeight: 18, includeFontPadding: false },
     moduleChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 3, marginTop: 2 },
     moduleChip: { paddingHorizontal: 5, paddingVertical: 2, borderRadius: Radius.full },
     moduleChipText: { fontSize: 9, fontWeight: '600', includeFontPadding: false },

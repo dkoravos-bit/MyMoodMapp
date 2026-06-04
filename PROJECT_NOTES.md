@@ -45,13 +45,13 @@ clearTimeout(timeoutId);
 ### Edge Function Configuration (Confirmed Working)
 - **Model**: `flux-schnell` (NOT `turbo` — more reliable)
 - **Dimensions**: 512×512 (1:1), 640×360 (16:9) — small = fast
-- **Timeout per attempt**: 90s per attempt (**NEVER reduce below 90s**)
-- **Retries**: 3 attempts (**NEVER reduce below 3**) — 5s wait on normal failure, 20s wait on 429 rate-limit
-- **CRITICAL**: 429 rate-limit requires **20s backoff** (**NEVER reduce below 20s**) — Pollinations enforces per-IP rate limits
+- **Timeout per attempt**: 60s per attempt — fits within Deno 150s execution limit
+- **Retries**: 2 attempts (2 × 60s + 1 × 10s backoff = 130s max, Deno-safe) — 5s wait on normal failure, 10s wait on 429
+- **CRITICAL**: 429 rate-limit requires **10s backoff** — Pollinations per-IP rate limit; old 20s × 3 attempts was exceeding Deno 150s limit making the 3rd attempt unreachable
 - **enhance=false**: reduces Pollinations processing latency
 - **seedOverride**: accepted in request body so client-side forced-regen works
-- **Client timeout**: 180s raw fetch (**NEVER reduce**) — applies to BOTH web and native
-- **Background prefetch stagger**: **2000ms** between layers (**NEVER increase above 2000ms**)
+- **Client timeout**: 130s raw fetch — applies to BOTH web and native
+- **Background prefetch**: ALL 5 layers fire in **parallel** (not sequential) — each layer has its own `fetchRef`+`inflightRef` guard; failures are isolated and don't block other layers
 - **Web parity rules (CRITICAL)**:
   - `TODAY_DATE` must be computed via `getTodayDate()` *inside* `invokeArtFunction` (not from a module-level constant) — SSR on web freezes module-level `new Date()` at server render time, causing cache key mismatches that silently skip generation
   - Web gets one automatic 3s-delayed retry on HTTP 5xx errors — browsers occasionally abort long-running fetch connections before Pollinations finishes; the retry matches native resilience

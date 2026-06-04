@@ -145,8 +145,8 @@ const INTRO_SLIDES = [
   },
   {
     title: 'AI-powered mood intelligence',
-    subtitle: 'Get personalised wellness reports powered by your mood data, health, weather, and cosmic alignment.',
-    icon: null,
+    subtitle: 'MyMoodMapp uses AI to analyse your mood patterns and generate personalised wellness reports. This requires sending your mood data to Anthropic\'s Claude AI service. Your name and email are never shared, and your data is never used to train AI models. You can opt out at any time in Settings.',
+    icon: 'psychology' as const,
   },
   {
     title: 'Your data, your choice',
@@ -244,7 +244,7 @@ export default function OnboardingScreen() {
     return (
       <SafeAreaView style={styles.safe}>
         <Image
-          source={require('@/assets/images/onboarding-hero.png')}
+          source={{ uri: 'https://cdn-ai.onspace.ai/onspace/files/34Gq4RAVBYknhhDqNrUJGm/4RC8N.jpg' }}
           style={styles.hero}
           contentFit="cover"
           transition={400}
@@ -369,7 +369,7 @@ export default function OnboardingScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <Image
-        source={require('@/assets/images/onboarding-hero.png')}
+        source={{ uri: 'https://cdn-ai.onspace.ai/onspace/files/34Gq4RAVBYknhhDqNrUJGm/4RC8N.jpg' }}
         style={styles.hero}
         contentFit="cover"
         transition={400}

@@ -88,7 +88,7 @@ export default function InsightsScreen() {
     (params.period as InsightPeriod) ?? 'weekly'
   );
   const [view, setView] = useState<PatternsView>(
-    (params.view as PatternsView) ?? 'tags'
+    (params.view as PatternsView) ?? 'report'
   );
 
   // Sync URL params whenever the tab is navigated to with new params
@@ -230,7 +230,9 @@ export default function InsightsScreen() {
       return { tagId: c.tagId, tagLabel: tag?.label ?? c.tagId, sampleSize: c.sampleSize, avgScore: c.avgScore, deltaVsBaseline: c.deltaVsBaseline, avgBody: c.avgBody, avgMind: c.avgMind };
     });
     const timeCtx: TimePatternContext[] = timePatterns.map(t => ({ timeOfDay: t.timeOfDay, avgScore: t.avgScore, sampleSize: t.sampleSize }));
-    const result = await generateInsights(period, moodLog, emotionLog, fitnessData, intakeSummary, tagCtx, timeCtx, astrologyContext, schumannContext, buildWeatherCtx(), cycleCtx);
+    // Pass moodLogEntries (rich MoodLogEntry[] with score/dimensions/tags/journal)
+    // NOT moodLog (legacy MoodEntry[] with only mood/note — no score data)
+    const result = await generateInsights(period, moodLogEntries as any, emotionLog, fitnessData, intakeSummary, tagCtx, timeCtx, astrologyContext, schumannContext, buildWeatherCtx(), cycleCtx);
     if (result) { setInsights(result); setGenerated(true); }
     else setError('Could not generate insights. Check your connection and try again.');
     setLoading(false);
@@ -260,7 +262,8 @@ export default function InsightsScreen() {
       return { tagId: c.tagId, tagLabel: tag?.label ?? c.tagId, sampleSize: c.sampleSize, avgScore: c.avgScore, deltaVsBaseline: c.deltaVsBaseline, avgBody: c.avgBody, avgMind: c.avgMind };
     });
     const timeCtx2: TimePatternContext[] = timePatterns.map(t => ({ timeOfDay: t.timeOfDay, avgScore: t.avgScore, sampleSize: t.sampleSize }));
-    const result = await generateInsights(period, moodLog, emotionLog, fitnessData, intakeSummary, tagCtx2, timeCtx2, astrologyContext, schumannContext, buildWeatherCtx(), cycleCtx);
+    // Pass moodLogEntries (rich data with score/dimensions/tags) not moodLog (legacy)
+    const result = await generateInsights(period, moodLogEntries as any, emotionLog, fitnessData, intakeSummary, tagCtx2, timeCtx2, astrologyContext, schumannContext, buildWeatherCtx(), cycleCtx);
     if (result) setInsights(result);
     else setError('Refresh failed.');
     setLoading(false);
@@ -379,10 +382,10 @@ export default function InsightsScreen() {
 
         {/* View toggle */}
         <View style={styles.viewToggle}>
-          {(['tags', 'time', 'report'] as PatternsView[]).map(v => (
+          {(['report', 'tags', 'time'] as PatternsView[]).map(v => (
             <Pressable key={v} onPress={() => setView(v)} style={[styles.viewTab, view === v && styles.viewTabActive]}>
               <Text style={[styles.viewTabText, view === v && styles.viewTabTextActive]}>
-                {v === 'tags' ? '📊 Tags' : v === 'time' ? '🕐 Time' : '🧠 AI Report'}
+                {v === 'report' ? '🧠 AI Report' : v === 'tags' ? '📊 Tags' : '🕐 Time'}
               </Text>
             </Pressable>
           ))}
@@ -1173,6 +1176,9 @@ function AIReportSection({
 
   return (
     <View style={{ gap: Spacing.lg }}>
+      {/* Quick Summary TTS — appears once at the top with Listen button */}
+      {insights.quickSummary ? <QuickSummaryCard summary={insights.quickSummary} /> : null}
+
       {/* Report tabs */}
       <ScrollView
         horizontal
@@ -1208,9 +1214,6 @@ function AIReportSection({
           </Pressable>
         </View>
         <Text style={{ fontSize: Typography.fontSizes.md, fontWeight: '700', color: C.textPrimary, lineHeight: Typography.fontSizes.md * 1.4, includeFontPadding: false } as any}>{insights.headline}</Text>
-        {insights.quickSummary ? (
-          <Text style={{ fontSize: Typography.fontSizes.sm, color: C.textSecondary, lineHeight: Typography.fontSizes.sm * 1.65, marginTop: Spacing.sm, includeFontPadding: false } as any}>{insights.quickSummary}</Text>
-        ) : null}
         <Text style={{ fontSize: 11, color: C.textMuted, marginTop: Spacing.sm, includeFontPadding: false } as any}>
           Generated {new Date(insights.generatedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
         </Text>
@@ -1227,9 +1230,6 @@ function AIReportSection({
       {(insights as any).behaviorRecommendations?.length > 0 ? (
         <BehaviorRecommendations recs={(insights as any).behaviorRecommendations} />
       ) : null}
-
-      {/* Quick Summary TTS */}
-      {insights.quickSummary ? <QuickSummaryCard summary={insights.quickSummary} /> : null}
     </View>
   );
 }
